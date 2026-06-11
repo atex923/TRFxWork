@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-臺鐵監造紀錄小本 V0.1.d
+臺鐵監造紀錄小本 V0.1.m
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
@@ -15,16 +15,34 @@ import sqlite3
 import tempfile
 import zipfile
 import calendar
+import re
+import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_TITLE = "臺鐵監造紀錄小本 V0.1.d"
+APP_TITLE = "臺鐵監造紀錄小本 V0.1.m"
 DB_FILE = "TR_FxWork.db"
 
 WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
 PASSWORD_SALT = "1981"
+
+PROJECT_EXTRA_FIELDS = [
+    "contractor", "company_address", "responsible_person", "contact_person",
+    "phone", "fax", "tax_id", "purchase_contract_no", "contract_date", "project_description",
+    "contract_budget_net", "contract_award_net", "contract_budget_tax", "contract_award_tax",
+    "contract_budget_total", "contract_award_total",
+    "labor_budget", "labor_award", "deposit_difference", "deposit_performance", "deposit_total",
+    "final_contract_amount", "warranty_rate", "warranty_deposit",
+]
+
+MONEY_FIELDS = {
+    "contract_budget_net", "contract_award_net", "contract_budget_tax", "contract_award_tax",
+    "contract_budget_total", "contract_award_total",
+    "labor_budget", "labor_award", "deposit_difference", "deposit_performance", "deposit_total",
+    "final_contract_amount", "warranty_deposit",
+}
 
 
 def today_str():
@@ -49,6 +67,125 @@ def fmt_date(d):
 
 def hash_password(password):
     return hashlib.sha256((PASSWORD_SALT + (password or "")).encode("utf-8")).hexdigest()
+
+
+def excel_col_name(index):
+    name = ""
+    index += 1
+    while index:
+        index, rem = divmod(index - 1, 26)
+        name = chr(65 + rem) + name
+    return name
+
+
+def xml_escape(value):
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def write_simple_xlsx(path, sheet_name, rows):
+    sheet_title = sheet_name[:31] or "Sheet1"
+    data = [[sheet_name]] + rows
+    sheet_rows = []
+    for r_idx, row in enumerate(data, start=1):
+        cells = []
+        for c_idx, value in enumerate(row, start=1):
+            ref = f"{excel_col_name(c_idx - 1)}{r_idx}"
+            cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{xml_escape(value)}</t></is></c>')
+        sheet_rows.append(f'<row r="{r_idx}">{"".join(cells)}</row>')
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>'
+    )
+    workbook_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<sheets><sheet name="{xml_escape(sheet_title)}" sheetId="1" r:id="rId1"/></sheets></workbook>'
+    )
+    rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+        '</Relationships>'
+    )
+    root_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+        '</Relationships>'
+    )
+    content_types_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+        '</Types>'
+    )
+    styles_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
+        '<borders count="1"><border/></borders>'
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+        '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>'
+        '</styleSheet>'
+    )
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types_xml)
+        zf.writestr("_rels/.rels", root_rels_xml)
+        zf.writestr("xl/workbook.xml", workbook_xml)
+        zf.writestr("xl/_rels/workbook.xml.rels", rels_xml)
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+        zf.writestr("xl/styles.xml", styles_xml)
+
+
+def read_simple_xlsx(path):
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    with zipfile.ZipFile(path, "r") as zf:
+        shared = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall("m:si", ns):
+                shared.append("".join(t.text or "" for t in si.findall(".//m:t", ns)))
+        root = ET.fromstring(zf.read("xl/worksheets/sheet1.xml"))
+    rows = []
+    for row in root.findall(".//m:row", ns):
+        vals = []
+        last_col = 0
+        for cell in row.findall("m:c", ns):
+            ref = cell.attrib.get("r", "")
+            match = re.match(r"([A-Z]+)", ref)
+            col = 0
+            if match:
+                for ch in match.group(1):
+                    col = col * 26 + ord(ch) - 64
+            while last_col + 1 < col:
+                vals.append("")
+                last_col += 1
+            ctype = cell.attrib.get("t", "")
+            if ctype == "inlineStr":
+                vals.append("".join(t.text or "" for t in cell.findall(".//m:t", ns)))
+            elif ctype == "s":
+                v = cell.find("m:v", ns)
+                vals.append(shared[int(v.text)] if v is not None and v.text and int(v.text) < len(shared) else "")
+            else:
+                v = cell.find("m:v", ns)
+                vals.append(v.text if v is not None and v.text is not None else "")
+            last_col = col
+        rows.append(vals)
+    return rows
 
 
 def add_calendar_days(start, days):
@@ -136,6 +273,30 @@ class DB:
         )
         """)
         c.execute("""
+        CREATE TABLE IF NOT EXISTS holiday_project_excludes (
+            project_id INTEGER,
+            day TEXT,
+            excluded INTEGER DEFAULT 0,
+            PRIMARY KEY(project_id, day)
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS workdays (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER,
+            day TEXT,
+            name TEXT
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS workday_project_excludes (
+            project_id INTEGER,
+            day TEXT,
+            excluded INTEGER DEFAULT 0,
+            PRIMARY KEY(project_id, day)
+        )
+        """)
+        c.execute("""
         CREATE TABLE IF NOT EXISTS weather (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER,
@@ -153,6 +314,14 @@ class DB:
             project_id INTEGER,
             day TEXT,
             note TEXT
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS railway_project_excludes (
+            project_id INTEGER,
+            day TEXT,
+            excluded INTEGER DEFAULT 0,
+            PRIMARY KEY(project_id, day)
         )
         """)
         c.execute("""
@@ -200,6 +369,22 @@ class DB:
         )
         """)
         c.execute("""
+        CREATE TABLE IF NOT EXISTS project_milestones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER,
+            item_no TEXT,
+            contract_item TEXT,
+            start_date TEXT,
+            deadline_days REAL DEFAULT 0,
+            deadline_date TEXT,
+            received_date TEXT,
+            overdue TEXT,
+            received_no TEXT,
+            note TEXT,
+            day_adjust REAL DEFAULT 0
+        )
+        """)
+        c.execute("""
         CREATE TABLE IF NOT EXISTS execution_status (
             project_id INTEGER PRIMARY KEY,
             status TEXT DEFAULT '',
@@ -210,6 +395,11 @@ class DB:
             c.execute("ALTER TABLE projects ADD COLUMN password_hash TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+        for field in PROJECT_EXTRA_FIELDS:
+            try:
+                c.execute(f"ALTER TABLE projects ADD COLUMN {field} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
         self.conn.commit()
 
     def get_setting(self, key, default=""):
@@ -251,9 +441,10 @@ class DB:
 
     def delete_project(self, pid):
         for table in (
-            "bids", "holidays", "weather", "railway",
+            "bids", "weather",
             "payment_contract", "payment_other", "payment_admin",
-            "execution_records", "execution_status"
+            "execution_records", "execution_status", "project_milestones",
+            "holiday_project_excludes", "workday_project_excludes", "railway_project_excludes"
         ):
             self.conn.execute(f"DELETE FROM {table} WHERE project_id=?", (pid,))
         self.conn.execute("DELETE FROM projects WHERE id=?", (pid,))
@@ -277,20 +468,71 @@ class DB:
             "actual_start", "contract_days", "day_type",
             "planned_finish_holiday", "planned_finish_transport", "actual_finish",
             "updated_at"
-        ]
+        ] + PROJECT_EXTRA_FIELDS
         sets = ", ".join(f"{f}=?" for f in fields)
         vals = [data.get(f, "") for f in fields] + [pid]
         self.conn.execute(f"UPDATE projects SET {sets} WHERE id=?", vals)
         self.conn.commit()
 
     def rows(self, table, pid):
+        if table == "holidays":
+            return self.shared_holidays(pid)
+        if table == "workdays":
+            return self.shared_workdays(pid)
+        if table == "railway":
+            return self.shared_railway(pid)
+        if table == "project_milestones":
+            return self.conn.execute("SELECT * FROM project_milestones WHERE project_id=? ORDER BY start_date, id", (pid,)).fetchall()
         return self.conn.execute(f"SELECT * FROM {table} WHERE project_id=? ORDER BY day, id", (pid,)).fetchall()
 
     def bids(self, pid):
         return self.conn.execute("SELECT * FROM bids WHERE project_id=? ORDER BY round_no, id", (pid,)).fetchall()
 
+    def shared_holidays(self, pid):
+        return self.conn.execute("""
+            SELECT h.day, h.name, COALESCE(e.excluded, 0) AS excluded
+            FROM (
+                SELECT day, COALESCE(NULLIF(MAX(name), ''), '假日') AS name
+                FROM holidays
+                WHERE day IS NOT NULL AND TRIM(day) <> ''
+                GROUP BY day
+            ) h
+            LEFT JOIN holiday_project_excludes e
+                ON e.day = h.day AND e.project_id = ?
+            ORDER BY h.day
+        """, (pid,)).fetchall()
+
+    def shared_workdays(self, pid):
+        return self.conn.execute("""
+            SELECT h.day, h.name, COALESCE(e.excluded, 0) AS excluded
+            FROM (
+                SELECT day, COALESCE(NULLIF(MAX(name), ''), '補班') AS name
+                FROM workdays
+                WHERE day IS NOT NULL AND TRIM(day) <> ''
+                GROUP BY day
+            ) h
+            LEFT JOIN workday_project_excludes e
+                ON e.day = h.day AND e.project_id = ?
+            ORDER BY h.day
+        """, (pid,)).fetchall()
+
+    def shared_railway(self, pid):
+        return self.conn.execute("""
+            SELECT r.day, r.note, COALESCE(e.excluded, 0) AS excluded
+            FROM (
+                SELECT day, COALESCE(NULLIF(MAX(note), ''), '疏運') AS note
+                FROM railway
+                WHERE day IS NOT NULL AND TRIM(day) <> ''
+                GROUP BY day
+            ) r
+            LEFT JOIN railway_project_excludes e
+                ON e.day = r.day AND e.project_id = ?
+            ORDER BY r.day
+        """, (pid,)).fetchall()
+
     def replace_rows(self, table, pid, rows):
-        self.conn.execute(f"DELETE FROM {table} WHERE project_id=?", (pid,))
+        if table not in ("holidays", "workdays", "railway"):
+            self.conn.execute(f"DELETE FROM {table} WHERE project_id=?", (pid,))
         if table == "bids":
             for r in rows:
                 self.conn.execute(
@@ -298,11 +540,33 @@ class DB:
                     (pid, r.get("round_no", 1), r.get("online_date", ""), r.get("open_date", ""))
                 )
         elif table == "holidays":
+            self.conn.execute("DELETE FROM holidays")
+            self.conn.execute("DELETE FROM holiday_project_excludes WHERE project_id=?", (pid,))
             for r in rows:
+                day = r.get("day", "")
                 self.conn.execute(
                     "INSERT INTO holidays(project_id, day, name) VALUES(?,?,?)",
-                    (pid, r.get("day", ""), r.get("name", ""))
+                    (0, day, r.get("name", ""))
                 )
+                if r.get("excluded", 0):
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO holiday_project_excludes(project_id, day, excluded) VALUES(?,?,1)",
+                        (pid, day)
+                    )
+        elif table == "workdays":
+            self.conn.execute("DELETE FROM workdays")
+            self.conn.execute("DELETE FROM workday_project_excludes WHERE project_id=?", (pid,))
+            for r in rows:
+                day = r.get("day", "")
+                self.conn.execute(
+                    "INSERT INTO workdays(project_id, day, name) VALUES(?,?,?)",
+                    (0, day, r.get("name", ""))
+                )
+                if r.get("excluded", 0):
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO workday_project_excludes(project_id, day, excluded) VALUES(?,?,1)",
+                        (pid, day)
+                    )
         elif table == "weather":
             for r in rows:
                 self.conn.execute(
@@ -313,11 +577,19 @@ class DB:
                     )
                 )
         elif table == "railway":
+            self.conn.execute("DELETE FROM railway")
+            self.conn.execute("DELETE FROM railway_project_excludes WHERE project_id=?", (pid,))
             for r in rows:
+                day = r.get("day", "")
                 self.conn.execute(
                     "INSERT INTO railway(project_id, day, note) VALUES(?,?,?)",
-                    (pid, r.get("day", ""), r.get("note", ""))
+                    (0, day, r.get("note", ""))
                 )
+                if r.get("excluded", 0):
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO railway_project_excludes(project_id, day, excluded) VALUES(?,?,1)",
+                        (pid, day)
+                    )
         elif table in ("payment_contract", "payment_other", "payment_admin"):
             for r in rows:
                 self.conn.execute(
@@ -330,23 +602,39 @@ class DB:
                     "INSERT INTO execution_records(project_id, day, record_type, subject, content, note) VALUES(?,?,?,?,?,?)",
                     (pid, r.get("day", ""), r.get("record_type", ""), r.get("subject", ""), r.get("content", ""), r.get("note", ""))
                 )
+        elif table == "project_milestones":
+            for r in rows:
+                self.conn.execute(
+                    "INSERT INTO project_milestones(project_id, item_no, contract_item, start_date, deadline_days, deadline_date, received_date, overdue, received_no, note, day_adjust) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        pid, r.get("item_no", ""), r.get("contract_item", ""), r.get("start_date", ""),
+                        r.get("deadline_days", 0), r.get("deadline_date", ""), r.get("received_date", ""),
+                        r.get("overdue", ""), r.get("received_no", ""), r.get("note", ""), r.get("day_adjust", 0)
+                    )
+                )
         self.conn.commit()
 
 
 class EditableTree(ttk.Frame):
-    def __init__(self, master, columns, headings, widths, on_changed=None, can_edit=None):
+    def __init__(self, master, columns, headings, widths, on_changed=None, can_edit=None, add_command=None):
         super().__init__(master)
         self.columns = columns
+        self.headings = headings
         self.on_changed = on_changed
         self.can_edit = can_edit or (lambda: True)
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12)
+        self.add_command = add_command or self.add_row
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12, style="Grid.Treeview")
         vs = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         hs = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        self.tree.tag_configure("pink", background="#f4cccc")
+        self.tree.tag_configure("red", foreground="#cc0000")
+        self.tree.tag_configure("year_sep", background="#000000", foreground="#ffffff")
 
         for col, head, width in zip(columns, headings, widths):
-            self.tree.heading(col, text=head)
-            self.tree.column(col, width=width, anchor="center", stretch=True)
+            self.tree.heading(col, text=head, command=lambda c=col: self.sort_by_column(c))
+            fixed_cols = {"exclude", "day", "name", "note"}
+            self.tree.column(col, width=width, minwidth=width, anchor="center", stretch=False if col in fixed_cols else True)
 
         self.tree.grid(row=0, column=0, sticky="nsew")
         vs.grid(row=0, column=1, sticky="ns")
@@ -356,10 +644,32 @@ class EditableTree(ttk.Frame):
 
         btns = ttk.Frame(self)
         btns.grid(row=2, column=0, columnspan=2, sticky="ew", pady=5)
-        ttk.Button(btns, text="新增一列", command=self.add_row).pack(side="left", padx=3)
+        ttk.Button(btns, text="新增一列", command=self.add_command).pack(side="left", padx=3)
         ttk.Button(btns, text="編輯選取列", command=self.edit_row).pack(side="left", padx=3)
         ttk.Button(btns, text="刪除選取列", command=self.delete_row).pack(side="left", padx=3)
         self.tree.bind("<Double-1>", lambda e: self.edit_row())
+        self.tree.bind("<Button-1>", self.on_tree_click)
+
+    def on_tree_click(self, event):
+        if not self.columns or self.columns[0] != "exclude":
+            return
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        col = self.tree.identify_column(event.x)
+        if col != "#1":
+            return
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return "break"
+        values = list(self.tree.item(item, "values"))
+        values[0] = "" if values and values[0] == "✓" else "✓"
+        self.tree.item(item, values=values)
+        self.changed()
+        return "break"
 
     def add_row(self, values=None):
         if not self.can_edit():
@@ -367,6 +677,22 @@ class EditableTree(ttk.Frame):
             return
         values = values or [""] * len(self.columns)
         self.tree.insert("", "end", values=values)
+        self.changed()
+
+    def add_row_after_selection(self, values=None):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        values = values or [""] * len(self.columns)
+        selected = self.tree.selection()
+        if selected:
+            index = self.tree.index(selected[-1]) + 1
+            item = self.tree.insert("", index, values=values)
+        else:
+            item = self.tree.insert("", "end", values=values)
+        self.tree.selection_set(item)
+        self.tree.focus(item)
+        self.tree.see(item)
         self.changed()
 
     def edit_row(self):
@@ -382,7 +708,8 @@ class EditableTree(ttk.Frame):
         win.grab_set()
         entries = []
         for i, col in enumerate(self.columns):
-            ttk.Label(win, text=col).grid(row=i, column=0, sticky="e", padx=8, pady=4)
+            label = self.headings[i] if i < len(self.headings) else col
+            ttk.Label(win, text=label).grid(row=i, column=0, sticky="e", padx=8, pady=4)
             e = ttk.Entry(win, width=32)
             e.grid(row=i, column=1, sticky="ew", padx=8, pady=4)
             e.insert(0, old[i] if i < len(old) else "")
@@ -410,12 +737,25 @@ class EditableTree(ttk.Frame):
         for row in rows:
             self.tree.insert("", "end", values=row)
 
+    def apply_row_tags(self, tag_func):
+        for item in self.tree.get_children():
+            values = list(self.tree.item(item, "values"))
+            tag = tag_func(values)
+            self.tree.item(item, tags=(tag,) if tag else ())
+
     def get_rows(self):
         return [list(self.tree.item(i, "values")) for i in self.tree.get_children()]
 
     def changed(self):
         if self.on_changed:
             self.on_changed()
+
+    def sort_by_column(self, col):
+        rows = [(self.tree.set(item, col), item) for item in self.tree.get_children("")]
+        rows.sort(key=lambda x: x[0])
+        for index, (_, item) in enumerate(rows):
+            self.tree.move(item, "", index)
+        self.changed()
 
 
 class App(tk.Tk):
@@ -424,6 +764,7 @@ class App(tk.Tk):
         self.title(APP_TITLE)
         self.geometry("1250x820")
         self.minsize(1100, 720)
+        self.resizable(True, True)
 
         self.db = DB(DB_FILE)
         self.current_project_id = None
@@ -432,6 +773,11 @@ class App(tk.Tk):
         self.project_password_hash = ""
         self.edit_unlocked = True
         self.edit_widgets = []
+        self.undo_snapshot = None
+        self.last_state = None
+        self.restoring = False
+        self.recalculating = False
+        self.save_after_id = None
 
         self.style = ttk.Style()
         self.style.configure("Top.TLabelframe.Label", font=("Microsoft JhengHei UI", 11, "bold"))
@@ -439,6 +785,10 @@ class App(tk.Tk):
         self.style.configure("TButton", font=("Microsoft JhengHei UI", 10))
         self.style.configure("Treeview", rowheight=26, font=("Microsoft JhengHei UI", 10))
         self.style.configure("Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"))
+        self.style.configure("Grid.Treeview", rowheight=26, font=("Microsoft JhengHei UI", 10), borderwidth=1, relief="solid")
+        self.style.configure("Grid.Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"), borderwidth=1, relief="solid")
+        self.style.map("TEntry", foreground=[("disabled", "#1f4e79")])
+        self.style.map("TCombobox", foreground=[("disabled", "#1f4e79")])
 
         self.build_ui()
         self.load_projects()
@@ -449,26 +799,22 @@ class App(tk.Tk):
         top_select = ttk.Frame(self, padding=8)
         top_select.pack(fill="x")
 
-        ttk.Label(top_select, text="工程：").pack(side="left")
+        ttk.Label(top_select, text="工程名稱：").pack(side="left")
         self.project_combo = ttk.Combobox(top_select, state="readonly", width=55)
         self.project_combo.pack(side="left", padx=5)
         self.project_combo.bind("<<ComboboxSelected>>", self.on_project_selected)
         ttk.Button(top_select, text="新增工程", command=self.new_project).pack(side="left", padx=5)
         ttk.Button(top_select, text="立即儲存", command=self.save_current).pack(side="left", padx=5)
-        ttk.Button(top_select, text="資料庫打包備份", command=self.backup_database).pack(side="left", padx=5)
-        ttk.Button(top_select, text="匯入備份", command=self.import_database).pack(side="left", padx=5)
-        ttk.Button(top_select, text="刪除工程", command=self.delete_current_project).pack(side="left", padx=5)
+        ttk.Button(top_select, text="回復上一個動作", command=self.undo_last_action).pack(side="left", padx=5)
 
-        ttk.Label(top_select, text="編輯密碼：").pack(side="left", padx=(12, 2))
         self.edit_password_var = tk.StringVar()
-        self.edit_password_entry = ttk.Entry(top_select, textvariable=self.edit_password_var, show="*", width=12)
-        self.edit_password_entry.pack(side="left", padx=2)
-        ttk.Button(top_select, text="解鎖", command=self.unlock_project).pack(side="left", padx=3)
         self.lock_state_var = tk.StringVar(value="未鎖定")
         ttk.Label(top_select, textvariable=self.lock_state_var, foreground="#a64d00").pack(side="left", padx=3)
 
+        ttk.Button(top_select, text="▶", width=3, command=self.toggle_function_panel).pack(side="right", padx=(6, 0))
         self.status_var = tk.StringVar(value="")
         ttk.Label(top_select, textvariable=self.status_var).pack(side="right")
+        self.function_panel = None
 
         self.summary = ttk.LabelFrame(self, text="工程基本資料顯示區", padding=8, style="Top.TLabelframe")
         self.summary.pack(fill="x", padx=8, pady=(0, 8))
@@ -506,20 +852,18 @@ class App(tk.Tk):
         self.tab_payment_other = ttk.Frame(self.nb, padding=8)
         self.tab_payment_admin = ttk.Frame(self.nb, padding=8)
         self.tab_execution = ttk.Frame(self.nb, padding=8)
-        self.tab_status = ttk.Frame(self.nb, padding=8)
-        self.tab_settings = ttk.Frame(self.nb, padding=8)
+        self.tab_milestone = ttk.Frame(self.nb, padding=8)
 
-        self.nb.add(self.tab_basic, text="第一分頁：工程基本資料")
-        self.nb.add(self.tab_holiday, text="第二分頁：假期表")
-        self.nb.add(self.tab_weather, text="第三分頁：晴雨表")
-        self.nb.add(self.tab_railway, text="第四分頁：鐵路疏運表")
-        self.nb.add(self.tab_calendar, text="第五分頁：週曆總表")
-        self.nb.add(self.tab_payment_contract, text="第六分頁：發包工程費計價")
-        self.nb.add(self.tab_payment_other, text="第七分頁：發包以外計價")
-        self.nb.add(self.tab_payment_admin, text="第八分頁：管理費計價")
-        self.nb.add(self.tab_execution, text="第九分頁：工程執行紀錄表")
-        self.nb.add(self.tab_status, text="第十分頁：執行狀態")
-        self.nb.add(self.tab_settings, text="第十一分頁：設定")
+        self.nb.add(self.tab_basic, text="工程基本資料")
+        self.nb.add(self.tab_holiday, text="假期表")
+        self.nb.add(self.tab_weather, text="晴雨表")
+        self.nb.add(self.tab_railway, text="鐵路疏運表")
+        self.nb.add(self.tab_calendar, text="施工日曆")
+        self.nb.add(self.tab_payment_contract, text="發包工程費計價")
+        self.nb.add(self.tab_payment_other, text="發包以外計價")
+        self.nb.add(self.tab_payment_admin, text="管理費計價")
+        self.nb.add(self.tab_execution, text="工程執行紀錄表")
+        self.nb.add(self.tab_milestone, text="工程大事記")
 
         self.build_basic_tab()
         self.build_holiday_tab()
@@ -528,129 +872,1074 @@ class App(tk.Tk):
         self.build_calendar_tab()
         self.build_payment_tabs()
         self.build_execution_tab()
-        self.build_status_tab()
-        self.build_settings_tab()
+        self.build_milestone_tab()
         self.assign_tree_edit_guards()
 
     def can_edit(self):
-        return self.edit_unlocked or not self.project_password_hash
+        manual_var = getattr(self, "data_edit_enabled_var", None)
+        manual_unlocked = True if manual_var is None else bool(manual_var.get())
+        password_unlocked = self.edit_unlocked or not self.project_password_hash
+        return manual_unlocked and password_unlocked
+
+    def add_page_edit_toggle(self, parent):
+        holder = ttk.Frame(parent)
+        holder.pack(fill="x", pady=(0, 4))
+        ttk.Checkbutton(
+            holder,
+            text="資料編輯鎖定解除（勾選才可編輯）",
+            variable=self.data_edit_enabled_var,
+            command=self.apply_edit_lock_state
+        ).pack(anchor="w")
+        return holder
 
     def mark_dirty(self, *_):
-        if not self.loading:
+        if not self.loading and not self.restoring:
             if not self.can_edit():
                 self.status_var.set("編輯已鎖定，請先輸入正確編輯密碼")
                 return
+            if self.recalculating:
+                self.dirty = True
+                self.schedule_auto_save()
+                return
+            if not self.recalculating:
+                current_state = self.capture_state()
+                if self.last_state is not None and current_state != self.last_state:
+                    self.undo_snapshot = self.last_state
+                self.last_state = current_state
             self.dirty = True
             self.recalculate()
+            if not self.recalculating:
+                self.last_state = self.capture_state()
+            self.schedule_auto_save()
 
-    def entry(self, parent, row, col, label, key, width=28):
-        ttk.Label(parent, text=label).grid(row=row, column=col, sticky="e", padx=6, pady=5)
+    def capture_state(self):
+        state = {
+            "basic": {},
+            "day_type": self.day_type_var.get() if hasattr(self, "day_type_var") else "",
+            "execution_status": self.execution_status_var.get() if hasattr(self, "execution_status_var") else "",
+            "trees": {},
+        }
+        if hasattr(self, "basic_vars"):
+            state["basic"] = {k: v.get() for k, v in self.basic_vars.items()}
+        if hasattr(self, "project_description_text"):
+            state["basic"]["project_description"] = self.project_description_text.get("1.0", "end-1c")
+        for name in [
+            "bid_tree", "holiday_tree", "workday_tree", "weather_tree", "railway_tree",
+            "payment_contract_tree", "payment_other_tree", "payment_admin_tree",
+            "execution_tree", "milestone_tree"
+        ]:
+            if hasattr(self, name):
+                state["trees"][name] = [list(row) for row in getattr(self, name).get_rows()]
+        return state
+
+    def restore_state(self, state):
+        if not state:
+            return
+        self.restoring = True
+        try:
+            for key, value in state.get("basic", {}).items():
+                if key in self.basic_vars:
+                    self.basic_vars[key].set(value)
+            if hasattr(self, "project_description_text"):
+                self.project_description_text.delete("1.0", "end")
+                self.project_description_text.insert("1.0", state.get("basic", {}).get("project_description", ""))
+            if hasattr(self, "day_type_var"):
+                self.day_type_var.set(state.get("day_type", "工作日") or "工作日")
+            if hasattr(self, "execution_status_var"):
+                self.execution_status_var.set(state.get("execution_status", "規劃中") or "規劃中")
+            for name, rows in state.get("trees", {}).items():
+                if hasattr(self, name):
+                    getattr(self, name).set_rows(rows)
+        finally:
+            self.restoring = False
+        self.dirty = True
+        self.recalculate()
+        self.last_state = self.capture_state()
+
+    def undo_last_action(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        if not self.undo_snapshot:
+            self.status_var.set("目前沒有可回復的上一個動作")
+            return
+        snapshot = self.undo_snapshot
+        self.undo_snapshot = None
+        self.restore_state(snapshot)
+        self.save_current()
+        self.status_var.set("已回復上一個動作並自動儲存")
+
+    def schedule_auto_save(self):
+        if self.loading or self.restoring:
+            return
+        if self.save_after_id:
+            try:
+                self.after_cancel(self.save_after_id)
+            except tk.TclError:
+                pass
+        self.save_after_id = self.after(800, self.run_scheduled_save)
+
+    def run_scheduled_save(self):
+        self.save_after_id = None
+        if self.dirty:
+            self.save_current()
+
+    def format_money_value(self, value):
+        amount = self.safe_amount(value)
+        if amount == 0 and not str(value or "").strip().replace("元", "").replace(",", ""):
+            return ""
+        return f"{amount:,.0f}元"
+
+    def format_money_field(self, key):
+        if key not in self.basic_vars or self.loading or self.restoring:
+            return
+        var = self.basic_vars[key]
+        raw = var.get().strip()
+        if not raw:
+            return
+        formatted = self.format_money_value(raw)
+        if formatted and formatted != raw:
+            var.set(formatted)
+
+    def toggle_function_panel(self):
+        if self.function_panel and self.function_panel.winfo_exists():
+            self.function_panel.destroy()
+            self.function_panel = None
+            return
+        panel = tk.Toplevel(self)
+        self.function_panel = panel
+        panel.title("功能區")
+        panel.transient(self)
+        panel.resizable(False, True)
+        x = self.winfo_rootx() + max(self.winfo_width() - 280, 0)
+        y = self.winfo_rooty() + 60
+        panel.geometry(f"280x520+{x}+{y}")
+        box = ttk.Frame(panel, padding=12)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="編輯密碼").pack(anchor="w", pady=(0, 2))
+        ttk.Entry(box, textvariable=self.edit_password_var, show="*", width=22).pack(fill="x", pady=(0, 4))
+        pwd_buttons = ttk.Frame(box)
+        pwd_buttons.pack(fill="x", pady=(0, 8))
+        ttk.Button(pwd_buttons, text="鎖定", command=self.lock_project).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        ttk.Button(pwd_buttons, text="解鎖", command=self.unlock_project).pack(side="left", expand=True, fill="x", padx=2)
+        ttk.Button(pwd_buttons, text="取消", command=self.clear_project_password).pack(side="left", expand=True, fill="x", padx=(2, 0))
+        ttk.Separator(box).pack(fill="x", pady=8)
+        ttk.Button(box, text="修改工程名稱", command=self.rename_current_project).pack(fill="x", pady=4)
+        ttk.Button(box, text="資料庫打包備份", command=self.backup_database).pack(fill="x", pady=4)
+        ttk.Button(box, text="異地備份資料庫", command=self.backup_database_offsite).pack(fill="x", pady=4)
+        ttk.Button(box, text="匯入備份", command=self.import_database).pack(fill="x", pady=4)
+        ttk.Button(box, text="匯出分頁檔案", command=self.export_page_excel).pack(fill="x", pady=4)
+        ttk.Button(box, text="匯入 Excel 到分頁", command=self.import_page_excel).pack(fill="x", pady=4)
+        ttk.Button(box, text="刪除工程", command=self.delete_current_project).pack(fill="x", pady=4)
+        ttk.Button(box, text="關閉功能區", command=panel.destroy).pack(fill="x", pady=(18, 4))
+
+    def open_date_picker(self, target_var, title="選擇日期"):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        base_date = parse_date(target_var.get()) or parse_date(self.basic_vars.get("planned_start", tk.StringVar()).get()) or date.today()
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        cal_frame = ttk.Frame(win, padding=10)
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+
+        def shift_month(delta):
+            year = year_var.get()
+            month = month_var.get() + delta
+            if month < 1:
+                month = 12
+                year -= 1
+            elif month > 12:
+                month = 1
+                year += 1
+            year_var.set(year)
+            month_var.set(month)
+            render_calendar()
+
+        ttk.Button(top, text="上一月", command=lambda: shift_month(-1)).pack(side="left", padx=(0, 8))
+        ttk.Label(top, text="年").pack(side="left")
+        year_spin = ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=lambda: render_calendar())
+        year_spin.pack(side="left", padx=(2, 8))
+        ttk.Label(top, text="月").pack(side="left")
+        month_spin = ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=lambda: render_calendar())
+        month_spin.pack(side="left", padx=(2, 8))
+        ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
+        cal_frame.pack()
+
+        def choose(day):
+            target_var.set(day.strftime("%Y-%m-%d"))
+            win.destroy()
+
+        def render_calendar():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+            try:
+                year = int(year_var.get())
+                month = int(month_var.get())
+                if month < 1 or month > 12:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                return
+            for cidx, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=cidx, padx=1, pady=1)
+            cal = calendar.Calendar(firstweekday=0)
+            for ridx, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                for cidx, day in enumerate(week):
+                    if day.month != month:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=ridx, column=cidx, padx=1, pady=1)
+                    else:
+                        ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: choose(d)).grid(row=ridx, column=cidx, padx=1, pady=1)
+
+        year_spin.bind("<Return>", lambda e: render_calendar())
+        month_spin.bind("<Return>", lambda e: render_calendar())
+        year_spin.bind("<FocusOut>", lambda e: render_calendar())
+        month_spin.bind("<FocusOut>", lambda e: render_calendar())
+        render_calendar()
+
+    def entry(self, parent, row, col, label, key, width=28, date_picker=False):
+        ttk.Label(parent, text=label).grid(row=row, column=col, sticky="e", padx=3, pady=2)
         var = tk.StringVar()
         var.trace_add("write", self.mark_dirty)
-        ent = ttk.Entry(parent, textvariable=var, width=width)
-        ent.grid(row=row, column=col+1, sticky="ew", padx=6, pady=5)
+        if date_picker:
+            holder = ttk.Frame(parent)
+            holder.grid(row=row, column=col+1, sticky="ew", padx=3, pady=2)
+            ent = ttk.Entry(holder, textvariable=var, width=max(width - 4, 8))
+            ent.pack(side="left", fill="x", expand=True)
+            btn = ttk.Button(holder, text="▼", width=3, command=lambda v=var, t=label: self.open_date_picker(v, t))
+            btn.pack(side="left", padx=(3, 0))
+            self.edit_widgets.append(btn)
+        else:
+            ent = ttk.Entry(parent, textvariable=var, width=width)
+            ent.grid(row=row, column=col+1, sticky="ew", padx=3, pady=2)
         self.edit_widgets.append(ent)
         self.basic_vars[key] = var
+        if key in MONEY_FIELDS:
+            ent.bind("<FocusOut>", lambda e, k=key: self.format_money_field(k))
+            ent.bind("<Return>", lambda e, k=key: self.format_money_field(k))
         return ent
+
+    def section_title(self, parent, text, row, columnspan=8):
+        ttk.Label(parent, text=text, anchor="center", font=("Microsoft JhengHei UI", 12, "bold")).grid(
+            row=row, column=0, columnspan=columnspan, sticky="ew", padx=6, pady=(10, 6)
+        )
+
+    def multiline_entry(self, parent, row, col, label, key, height=3):
+        ttk.Label(parent, text=label).grid(row=row, column=col, sticky="ne", padx=3, pady=2)
+        txt = tk.Text(parent, height=height, width=60, wrap="word", font=("Microsoft JhengHei UI", 10))
+        txt.configure(borderwidth=1, relief="solid", highlightthickness=1, highlightbackground="#888888")
+        txt.grid(row=row, column=col+1, columnspan=7, sticky="ew", padx=3, pady=2)
+        txt.bind("<KeyRelease>", lambda e: self.mark_dirty())
+        txt.bind("<FocusOut>", lambda e: self.mark_dirty())
+        self.edit_widgets.append(txt)
+        setattr(self, key + "_text", txt)
+        return txt
 
     def build_basic_tab(self):
         self.basic_vars = {}
-        form = ttk.LabelFrame(self.tab_basic, text="手動輸入工程基本資料", padding=8)
-        form.pack(fill="x")
+        canvas = tk.Canvas(self.tab_basic, highlightthickness=0)
+        vs = ttk.Scrollbar(self.tab_basic, orient="vertical", command=canvas.yview)
+        hs = ttk.Scrollbar(self.tab_basic, orient="horizontal", command=canvas.xview)
+        canvas.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vs.grid(row=0, column=1, sticky="ns")
+        hs.grid(row=1, column=0, sticky="ew")
+        self.tab_basic.grid_rowconfigure(0, weight=1)
+        self.tab_basic.grid_columnconfigure(0, weight=1)
+        content = ttk.Frame(canvas)
+        canvas_window = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(canvas_window, width=max(e.width, content.winfo_reqwidth())))
+        def on_mousewheel(event):
+            delta = -1 if event.delta > 0 else 1
+            canvas.yview_scroll(delta * 3, "units")
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
 
-        self.entry(form, 0, 0, "工程名稱", "name", 45)
-        self.entry(form, 0, 2, "工程執行號", "exec_no")
-        self.entry(form, 1, 0, "工程預算單號", "budget_no")
-        self.entry(form, 1, 2, "決標日期", "award_date")
-        self.entry(form, 2, 0, "預訂開工日", "planned_start")
-        self.entry(form, 2, 2, "實際開工日", "actual_start")
-        self.entry(form, 3, 0, "契約工期", "contract_days")
-        ttk.Label(form, text="工期類型").grid(row=3, column=2, sticky="e", padx=6, pady=5)
+        form = ttk.Frame(content, padding=8)
+        form.pack(fill="x")
+        self.section_title(form, "工程基本資料", 0)
+
+        self.data_edit_enabled_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            form,
+            text="資料編輯鎖定解除（勾選才可編輯）",
+            variable=self.data_edit_enabled_var,
+            command=self.apply_edit_lock_state
+        ).grid(row=1, column=0, columnspan=8, sticky="w", padx=3, pady=2)
+
+        self.entry(form, 2, 0, "工程名稱", "name", 18)
+        self.entry(form, 2, 2, "工程執行號", "exec_no", 14)
+        self.entry(form, 2, 4, "動支請示單號", "budget_no", 14)
+        self.entry(form, 2, 6, "採購契約號碼", "purchase_contract_no", 14)
+        self.entry(form, 3, 0, "決標日期", "award_date", 14, date_picker=True)
+        self.entry(form, 3, 2, "簽約日期", "contract_date", 14, date_picker=True)
+        self.entry(form, 3, 4, "預訂開工日", "planned_start", 14, date_picker=True)
+        self.entry(form, 3, 6, "實際開工日", "actual_start", 14, date_picker=True)
+        self.entry(form, 4, 0, "契約工期", "contract_days", 10)
+        ttk.Label(form, text="工期類型").grid(row=4, column=2, sticky="e", padx=3, pady=2)
         self.day_type_var = tk.StringVar(value="工作日")
         self.day_type_var.trace_add("write", self.mark_dirty)
-        self.day_type = ttk.Combobox(form, textvariable=self.day_type_var, state="readonly", values=["工作日", "日曆天"], width=25)
-        self.day_type.grid(row=3, column=3, sticky="ew", padx=6, pady=5)
+        self.day_type = ttk.Combobox(form, textvariable=self.day_type_var, state="readonly", values=["工作日", "日曆天"], width=10)
+        self.day_type.grid(row=4, column=3, sticky="ew", padx=3, pady=2)
         self.edit_widgets.append(self.day_type)
 
-        self.entry(form, 4, 0, "預訂竣工日（例假表）", "planned_finish_holiday")
-        self.entry(form, 4, 2, "預訂竣工日（疏運表）", "planned_finish_transport")
-        self.entry(form, 5, 0, "實際竣工日", "actual_finish")
+        self.entry(form, 4, 4, "預訂竣工日（例假表）", "planned_finish_holiday", 14, date_picker=True)
+        self.entry(form, 4, 6, "預訂竣工日（疏運表）", "planned_finish_transport", 14, date_picker=True)
+        self.entry(form, 5, 0, "實際竣工日", "actual_finish", 14, date_picker=True)
+        self.entry(form, 5, 2, "承攬商", "contractor", 14)
+        self.entry(form, 5, 4, "公司地址", "company_address", 14)
+        self.entry(form, 5, 6, "負責人", "responsible_person", 14)
+        self.entry(form, 6, 0, "聯絡人", "contact_person", 14)
+        self.entry(form, 6, 2, "電話", "phone", 14)
+        self.entry(form, 6, 4, "傳真電話", "fax", 14)
+        self.entry(form, 6, 6, "統一編號", "tax_id", 14)
 
-        for i in range(4):
+        ttk.Label(form, text="工程執行狀態").grid(row=7, column=0, sticky="e", padx=3, pady=2)
+        self.execution_status_var = tk.StringVar(value="規劃中")
+        self.execution_status_var.trace_add("write", self.mark_dirty)
+        self.execution_status_combo = ttk.Combobox(
+            form,
+            textvariable=self.execution_status_var,
+            values=["規劃中", "招標中", "決標完成", "開工中", "施工中", "停工中", "復工中", "竣工中", "已竣工", "驗收中", "驗收完成", "結案"],
+            width=14
+        )
+        self.execution_status_combo.grid(row=7, column=1, sticky="ew", padx=3, pady=2)
+        self.edit_widgets.append(self.execution_status_combo)
+
+        self.multiline_entry(form, 8, 0, "工程說明", "project_description", height=3)
+
+        self.section_title(form, "發包工程費", 9)
+        self.entry(form, 10, 0, "預算(未稅)", "contract_budget_net", 12)
+        self.entry(form, 10, 2, "決標(未稅)", "contract_award_net", 12)
+        self.entry(form, 10, 4, "稅金(預算)", "contract_budget_tax", 12)
+        self.entry(form, 10, 6, "稅金(決標)", "contract_award_tax", 12)
+        self.entry(form, 11, 0, "預算(含稅)", "contract_budget_total", 12)
+        self.entry(form, 11, 2, "決標(契約金額含稅)", "contract_award_total", 12)
+
+        self.section_title(form, "包工費", 12)
+        self.entry(form, 13, 0, "預算", "labor_budget", 12)
+        self.entry(form, 13, 2, "決標", "labor_award", 12)
+        self.entry(form, 13, 4, "差額保證金", "deposit_difference", 12)
+        self.entry(form, 13, 6, "履約保證金", "deposit_performance", 12)
+        self.entry(form, 14, 0, "保證金總額(差額+履約)", "deposit_total", 12)
+
+        self.section_title(form, "竣工發包工程費", 15)
+        self.entry(form, 16, 0, "竣工發包工程費", "final_contract_amount", 12)
+        self.entry(form, 16, 2, "保固金比例", "warranty_rate", 12)
+        self.entry(form, 16, 4, "保固保證金", "warranty_deposit", 12)
+
+        for i in range(8):
             form.grid_columnconfigure(i, weight=1)
 
-        bid_box = ttk.LabelFrame(self.tab_basic, text="招標上網日 / 開標日期（可建立多次開標）", padding=8)
+        bid_box = ttk.LabelFrame(content, text="招標上網日 / 開標日期（可建立多次開標）", padding=8)
         bid_box.pack(fill="both", expand=True, pady=8)
         self.bid_tree = EditableTree(
             bid_box,
             ["round_no", "online_date", "open_date"],
             ["第幾次", "招標上網日", "開標日期"],
             [100, 180, 180],
-            self.mark_dirty
+            self.mark_dirty,
+            add_command=self.open_bid_calendar_dialog
         )
         self.bid_tree.pack(fill="both", expand=True)
 
-        ttk.Button(self.tab_basic, text="重新計算預訂竣工日", command=self.recalculate).pack(anchor="e", pady=4)
+        ttk.Button(content, text="重新計算預訂竣工日", command=self.recalculate).pack(anchor="e", pady=4)
+
+    def open_bid_calendar_dialog(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+
+        base_date = parse_date(self.basic_vars.get("award_date", tk.StringVar()).get()) or date.today()
+        win = tk.Toplevel(self)
+        win.title("新增招標日期")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        selected_day_var = tk.StringVar(value="")
+        round_var = tk.StringVar(value=str(len(self.bid_tree.get_rows()) + 1))
+        date_type_var = tk.StringVar(value="招標上網日")
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+        cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+
+        def shift_month(delta):
+            year = year_var.get()
+            month = month_var.get() + delta
+            if month < 1:
+                month = 12
+                year -= 1
+            elif month > 12:
+                month = 1
+                year += 1
+            year_var.set(year)
+            month_var.set(month)
+            selected_day_var.set("")
+            render_calendar()
+
+        ttk.Button(top, text="上一月", command=lambda: shift_month(-1)).pack(side="left", padx=(0, 8))
+        ttk.Label(top, text="年").pack(side="left")
+        year_spin = ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=lambda: render_calendar())
+        year_spin.pack(side="left", padx=(2, 8))
+        ttk.Label(top, text="月").pack(side="left")
+        month_spin = ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=lambda: render_calendar())
+        month_spin.pack(side="left", padx=(2, 8))
+        ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
+
+        cal_frame.pack()
+        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        ttk.Label(form, text="第幾次").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Entry(form, textvariable=round_var, width=10).grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(form, text="輸入狀況").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Combobox(form, textvariable=date_type_var, values=["招標上網日", "開標日期"], state="readonly", width=16).grid(row=1, column=1, sticky="w", pady=4)
+
+        def select_day(day):
+            selected_day_var.set(day.strftime("%Y-%m-%d"))
+
+        def render_calendar():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+            try:
+                year = int(year_var.get())
+                month = int(month_var.get())
+                if month < 1 or month > 12:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                return
+            for cidx, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=cidx, padx=1, pady=1)
+            cal = calendar.Calendar(firstweekday=0)
+            for ridx, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                for cidx, day in enumerate(week):
+                    if day.month != month:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=ridx, column=cidx, padx=1, pady=1)
+                    else:
+                        ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: select_day(d)).grid(row=ridx, column=cidx, padx=1, pady=1)
+
+        def ok():
+            day_text = selected_day_var.get().strip()
+            if not day_text:
+                messagebox.showwarning("尚未選日期", "請先在日曆表點選招標日期。", parent=win)
+                return
+            round_text = round_var.get().strip() or str(len(self.bid_tree.get_rows()) + 1)
+            if date_type_var.get() == "招標上網日":
+                values = [round_text, day_text, ""]
+            else:
+                values = [round_text, "", day_text]
+            self.bid_tree.add_row_after_selection(values)
+            selected_day_var.set("")
+            self.status_var.set(f"已新增招標資訊：{date_type_var.get()} {day_text}")
+
+        btns = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="關閉", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="增加招標日期", command=ok).pack(side="right", padx=4)
+        year_spin.bind("<Return>", lambda e: render_calendar())
+        month_spin.bind("<Return>", lambda e: render_calendar())
+        year_spin.bind("<FocusOut>", lambda e: render_calendar())
+        month_spin.bind("<FocusOut>", lambda e: render_calendar())
+        render_calendar()
 
     def build_holiday_tab(self):
-        ttk.Label(self.tab_holiday, text="輸入格式：日期請用 YYYY-MM-DD，名稱例如：中秋節、國定假日、停工日").pack(anchor="w")
+        self.add_page_edit_toggle(self.tab_holiday)
+        toolbar = ttk.Frame(self.tab_holiday)
+        toolbar.pack(fill="x", pady=(0, 6))
+        ttk.Label(toolbar, text="假期表與補班日表：按「新增一列」用日曆新增。").pack(side="left")
+        ttk.Button(toolbar, text="複製前一年度假期", command=self.copy_previous_year_holidays).pack(side="right", padx=4)
+        ttk.Button(toolbar, text="確認假期", command=self.confirm_holidays).pack(side="right", padx=4)
+
+        tables = ttk.Frame(self.tab_holiday)
+        tables.pack(fill="both", expand=True)
+        left = ttk.LabelFrame(tables, text="假期表", padding=6)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        right = ttk.LabelFrame(tables, text="補班日表", padding=6)
+        right.pack(side="left", fill="both", expand=True, padx=(4, 0))
+
         self.holiday_tree = EditableTree(
-            self.tab_holiday,
-            ["day", "name"],
-            ["日期", "假日名稱"],
-            [160, 360],
-            self.mark_dirty
+            left,
+            ["exclude", "day", "name"],
+            ["排除", "日期", "假日名稱"],
+            [45, 160, 160],
+            self.mark_dirty,
+            add_command=self.open_holiday_calendar_dialog
         )
         self.holiday_tree.pack(fill="both", expand=True, pady=6)
+        self.workday_tree = EditableTree(
+            right,
+            ["exclude", "day", "name"],
+            ["排除", "日期", "補班名稱"],
+            [45, 160, 160],
+            self.mark_dirty,
+            add_command=self.open_workday_calendar_dialog
+        )
+        self.workday_tree.pack(fill="both", expand=True, pady=6)
+
+    def copy_previous_year_holidays(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "請先解除鎖定。")
+            return
+        year = simpledialog.askinteger("複製前一年度假期", "請輸入要新增的年份：", parent=self, initialvalue=date.today().year)
+        if not year:
+            return
+        prev_year = year - 1
+        existing = {r[1] for r in self.holiday_tree.get_rows() if len(r) > 1}
+        copied = 0
+        for row in self.holiday_tree.get_rows():
+            if len(row) < 3:
+                continue
+            d = parse_date(row[1])
+            if not d or d.year != prev_year:
+                continue
+            try:
+                new_day = d.replace(year=year)
+            except ValueError:
+                continue
+            day_text = fmt_date(new_day)
+            if day_text in existing:
+                continue
+            item = self.holiday_tree.tree.insert("", "end", values=["", day_text, row[2]], tags=("red",))
+            self.holiday_tree.tree.see(item)
+            existing.add(day_text)
+            copied += 1
+        self.mark_dirty()
+        self.status_var.set(f"已複製 {copied} 筆 {year} 年假期，請確認假期")
+
+    def confirm_holidays(self):
+        for item in self.holiday_tree.tree.get_children():
+            self.holiday_tree.tree.item(item, tags=())
+        self.mark_dirty()
+        self.status_var.set("假期已確認")
+
+    def apply_year_separators(self, tree):
+        last_year = None
+        for item in tree.tree.get_children():
+            vals = list(tree.tree.item(item, "values"))
+            d = parse_date(vals[1] if len(vals) > 1 else "")
+            if not d:
+                continue
+            tags = list(tree.tree.item(item, "tags"))
+            if last_year is not None and d.year != last_year and "red" not in tags:
+                tags.append("year_sep")
+            last_year = d.year
+            tree.tree.item(item, tags=tuple(tags))
+
+    def open_holiday_calendar_dialog(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+
+        start_date = parse_date(self.basic_vars.get("planned_start", tk.StringVar()).get())
+        base_date = start_date or date.today()
+
+        win = tk.Toplevel(self)
+        win.title("新增假期")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        selected_day_var = tk.StringVar(value="")
+        holiday_name_var = tk.StringVar(value="")
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+
+        def shift_month(delta):
+            year = year_var.get()
+            month = month_var.get() + delta
+            if month < 1:
+                month = 12
+                year -= 1
+            elif month > 12:
+                month = 1
+                year += 1
+            year_var.set(year)
+            month_var.set(month)
+            selected_day_var.set("")
+            render_calendar()
+
+        ttk.Button(top, text="上一月", command=lambda: shift_month(-1)).pack(side="left", padx=(0, 8))
+        ttk.Label(top, text="年").pack(side="left")
+        year_spin = ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=lambda: render_calendar())
+        year_spin.pack(side="left", padx=(2, 8))
+        ttk.Label(top, text="月").pack(side="left")
+        month_spin = ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=lambda: render_calendar())
+        month_spin.pack(side="left", padx=(2, 8))
+        ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
+
+        cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+        cal_frame.pack()
+        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        ttk.Label(form, text="假期名稱").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        name_entry = ttk.Entry(form, textvariable=holiday_name_var, width=34)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        form.grid_columnconfigure(1, weight=1)
+
+        def select_day(day):
+            selected_day_var.set(day.strftime("%Y-%m-%d"))
+            name_entry.focus_set()
+
+        def render_calendar():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+
+            try:
+                year = int(year_var.get())
+                month = int(month_var.get())
+                if month < 1 or month > 12:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                return
+
+            for col, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=col, padx=1, pady=1)
+
+            cal = calendar.Calendar(firstweekday=0)
+            for row, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                for col, day in enumerate(week):
+                    if day.month != month:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=row, column=col, padx=1, pady=1)
+                        continue
+                    btn = ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: select_day(d))
+                    btn.grid(row=row, column=col, padx=1, pady=1)
+
+        def ok():
+            day_text = selected_day_var.get().strip()
+            if not day_text:
+                messagebox.showwarning("尚未選日期", "請先在日曆表點選假期日期。", parent=win)
+                return
+            name_text = holiday_name_var.get().strip()
+            if not name_text:
+                messagebox.showwarning("尚未輸入假期名稱", "請在日曆表下方輸入假期名稱。", parent=win)
+                return
+            self.holiday_tree.add_row(["", day_text, name_text])
+            holiday_name_var.set("")
+            selected_day_var.set("")
+            self.status_var.set(f"已新增假期：{day_text} {name_text}")
+            name_entry.focus_set()
+
+        btns = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="關閉", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="增加假期", command=ok).pack(side="right", padx=4)
+
+        year_spin.bind("<Return>", lambda e: render_calendar())
+        month_spin.bind("<Return>", lambda e: render_calendar())
+        year_spin.bind("<FocusOut>", lambda e: render_calendar())
+        month_spin.bind("<FocusOut>", lambda e: render_calendar())
+        render_calendar()
+        name_entry.focus_set()
+
+    def open_workday_calendar_dialog(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "請先解除鎖定。")
+            return
+        base_date = parse_date(self.basic_vars.get("planned_start", tk.StringVar()).get()) or date.today()
+        win = tk.Toplevel(self)
+        win.title("新增補班日")
+        win.transient(self)
+        win.grab_set()
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        selected_day_var = tk.StringVar(value="")
+        name_var = tk.StringVar(value="")
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+        cal_frame = ttk.Frame(win, padding=10)
+        cal_frame.pack()
+        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        ttk.Label(form, text="補班名稱").grid(row=0, column=0, sticky="e", padx=(0, 6))
+        ttk.Entry(form, textvariable=name_var, width=32).grid(row=0, column=1, sticky="ew")
+
+        def render():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+            y, m = int(year_var.get()), int(month_var.get())
+            for c, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=c)
+            for r, week in enumerate(calendar.Calendar(firstweekday=0).monthdatescalendar(y, m), start=1):
+                for c, day in enumerate(week):
+                    if day.month != m:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=r, column=c)
+                    else:
+                        ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: selected_day_var.set(fmt_date(d))).grid(row=r, column=c)
+
+        def shift(delta):
+            y, m = year_var.get(), month_var.get() + delta
+            if m < 1:
+                y, m = y - 1, 12
+            elif m > 12:
+                y, m = y + 1, 1
+            year_var.set(y)
+            month_var.set(m)
+            render()
+
+        ttk.Button(top, text="上一月", command=lambda: shift(-1)).pack(side="left")
+        ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=render).pack(side="left", padx=4)
+        ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=render).pack(side="left", padx=4)
+        ttk.Button(top, text="下一月", command=lambda: shift(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render())).pack(side="left", padx=8)
+
+        def ok():
+            day_text = selected_day_var.get().strip()
+            if not day_text:
+                messagebox.showwarning("尚未選日期", "請先點選補班日期。", parent=win)
+                return
+            name = name_var.get().strip() or "補班"
+            self.workday_tree.add_row(["", day_text, name])
+            selected_day_var.set("")
+            name_var.set("")
+
+        btns = ttk.Frame(win, padding=10)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="關閉", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="增加補班日", command=ok).pack(side="right", padx=4)
+        render()
 
     def build_weather_tab(self):
+        self.add_page_edit_toggle(self.tab_weather)
         ttk.Label(
             self.tab_weather,
-            text="晴雨表：上午欄位寫 1 = 上午雨；下午欄位寫 0.5 = 下午雨；天氣欄位寫 1 = 颱風；場地欄位寫 1 = 場地"
+            text="晴雨表：按「新增一列」會開啟年、月日曆表；下方可分別輸入上午、下午、天氣、場地與備註。"
         ).pack(anchor="w")
         self.weather_tree = EditableTree(
             self.tab_weather,
             ["day", "morning", "afternoon", "typhoon", "site", "note"],
             ["日期", "上午", "下午", "天氣", "場地", "備註"],
             [130, 80, 80, 80, 80, 300],
-            self.mark_dirty
+            self.mark_dirty,
+            add_command=self.open_weather_calendar_dialog
         )
         self.weather_tree.pack(fill="both", expand=True, pady=6)
 
+    def open_weather_calendar_dialog(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+
+        start_date = parse_date(self.basic_vars.get("planned_start", tk.StringVar()).get())
+        base_date = start_date or date.today()
+
+        win = tk.Toplevel(self)
+        win.title("新增晴雨紀錄")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        selected_day_var = tk.StringVar(value="")
+        morning_var = tk.StringVar(value="")
+        afternoon_var = tk.StringVar(value="")
+        typhoon_var = tk.StringVar(value="")
+        site_var = tk.StringVar(value="")
+        note_var = tk.StringVar(value="")
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+
+        def shift_month(delta):
+            year = year_var.get()
+            month = month_var.get() + delta
+            if month < 1:
+                month = 12
+                year -= 1
+            elif month > 12:
+                month = 1
+                year += 1
+            year_var.set(year)
+            month_var.set(month)
+            selected_day_var.set("")
+            render_calendar()
+
+        ttk.Button(top, text="上一月", command=lambda: shift_month(-1)).pack(side="left", padx=(0, 8))
+        ttk.Label(top, text="年").pack(side="left")
+        year_spin = ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=lambda: render_calendar())
+        year_spin.pack(side="left", padx=(2, 8))
+        ttk.Label(top, text="月").pack(side="left")
+        month_spin = ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=lambda: render_calendar())
+        month_spin.pack(side="left", padx=(2, 8))
+        ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
+
+        cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+        cal_frame.pack()
+        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        fields = [
+            ("上午", morning_var),
+            ("下午", afternoon_var),
+            ("天氣", typhoon_var),
+            ("場地", site_var),
+            ("備註", note_var),
+        ]
+        entries = []
+        for i, (label, var) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=i, column=0, sticky="e", padx=(0, 6), pady=4)
+            entry_width = 34 if label == "備註" else 12
+            ent = ttk.Entry(form, textvariable=var, width=entry_width)
+            ent.grid(row=i, column=1, sticky="ew", pady=4)
+            entries.append(ent)
+        form.grid_columnconfigure(1, weight=1)
+
+        def select_day(day):
+            selected_day_var.set(day.strftime("%Y-%m-%d"))
+            entries[0].focus_set()
+
+        def render_calendar():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+
+            try:
+                year = int(year_var.get())
+                month = int(month_var.get())
+                if month < 1 or month > 12:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                return
+
+            for col, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=col, padx=1, pady=1)
+
+            cal = calendar.Calendar(firstweekday=0)
+            for row, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                for col, day in enumerate(week):
+                    if day.month != month:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=row, column=col, padx=1, pady=1)
+                        continue
+                    btn = ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: select_day(d))
+                    btn.grid(row=row, column=col, padx=1, pady=1)
+
+        def ok():
+            day_text = selected_day_var.get().strip()
+            if not day_text:
+                messagebox.showwarning("尚未選日期", "請先在日曆表點選晴雨紀錄日期。", parent=win)
+                return
+            values = [
+                day_text,
+                morning_var.get().strip(),
+                afternoon_var.get().strip(),
+                typhoon_var.get().strip(),
+                site_var.get().strip(),
+                note_var.get().strip(),
+            ]
+            self.weather_tree.add_row_after_selection(values)
+            selected_day_var.set("")
+            for var in (morning_var, afternoon_var, typhoon_var, site_var, note_var):
+                var.set("")
+            self.status_var.set(f"已新增晴雨紀錄：{day_text}")
+            entries[0].focus_set()
+
+        btns = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="關閉", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="增加晴雨紀錄", command=ok).pack(side="right", padx=4)
+
+        year_spin.bind("<Return>", lambda e: render_calendar())
+        month_spin.bind("<Return>", lambda e: render_calendar())
+        year_spin.bind("<FocusOut>", lambda e: render_calendar())
+        month_spin.bind("<FocusOut>", lambda e: render_calendar())
+        render_calendar()
+        entries[0].focus_set()
+
     def build_railway_tab(self):
-        ttk.Label(self.tab_railway, text="鐵路疏運停工日期：日期請用 YYYY-MM-DD；列入預訂竣工日（疏運表）排除。").pack(anchor="w")
+        self.add_page_edit_toggle(self.tab_railway)
+        top = ttk.Frame(self.tab_railway)
+        top.pack(fill="x")
+        ttk.Label(top, text="鐵路疏運停工日期：可讀入第二分頁假期表；新增時會插在目前選取列下方。").pack(side="left")
+        ttk.Button(top, text="讀入第二分頁假期表", command=self.import_holidays_to_railway).pack(side="right")
         self.railway_tree = EditableTree(
             self.tab_railway,
-            ["day", "note"],
-            ["日期", "備註"],
-            [160, 420],
-            self.mark_dirty
+            ["exclude", "day", "note"],
+            ["排除", "日期", "疏運名稱"],
+            [45, 160, 160],
+            self.mark_dirty,
+            add_command=self.open_railway_calendar_dialog
         )
         self.railway_tree.pack(fill="both", expand=True, pady=6)
 
+    def import_holidays_to_railway(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        existing_days = {r[1] for r in self.railway_tree.get_rows() if len(r) > 1 and r[1]}
+        added = 0
+        for row in self.holiday_tree.get_rows():
+            if len(row) < 3:
+                continue
+            if row[0] == "✓":
+                continue
+            day_text = (row[1] or "").strip()
+            name_text = (row[2] or "").strip()
+            if not parse_date(day_text) or day_text in existing_days:
+                continue
+            self.railway_tree.add_row(["", day_text, name_text])
+            existing_days.add(day_text)
+            added += 1
+        self.status_var.set(f"已從假期表讀入 {added} 筆資料")
+
+    def open_railway_calendar_dialog(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+
+        start_date = parse_date(self.basic_vars.get("planned_start", tk.StringVar()).get())
+        base_date = start_date or date.today()
+
+        win = tk.Toplevel(self)
+        win.title("新增鐵路疏運停工日")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        selected_day_var = tk.StringVar(value="")
+        note_var = tk.StringVar(value="")
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+
+        def shift_month(delta):
+            year = year_var.get()
+            month = month_var.get() + delta
+            if month < 1:
+                month = 12
+                year -= 1
+            elif month > 12:
+                month = 1
+                year += 1
+            year_var.set(year)
+            month_var.set(month)
+            selected_day_var.set("")
+            render_calendar()
+
+        ttk.Button(top, text="上一月", command=lambda: shift_month(-1)).pack(side="left", padx=(0, 8))
+        ttk.Label(top, text="年").pack(side="left")
+        year_spin = ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=lambda: render_calendar())
+        year_spin.pack(side="left", padx=(2, 8))
+        ttk.Label(top, text="月").pack(side="left")
+        month_spin = ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=lambda: render_calendar())
+        month_spin.pack(side="left", padx=(2, 8))
+        ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
+
+        cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+        cal_frame.pack()
+        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        ttk.Label(form, text="疏運名稱").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        note_entry = ttk.Entry(form, textvariable=note_var, width=34)
+        note_entry.grid(row=0, column=1, sticky="ew", pady=4)
+        form.grid_columnconfigure(1, weight=1)
+
+        def select_day(day):
+            selected_day_var.set(day.strftime("%Y-%m-%d"))
+            note_entry.focus_set()
+
+        def render_calendar():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+
+            try:
+                year = int(year_var.get())
+                month = int(month_var.get())
+                if month < 1 or month > 12:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                return
+
+            for col, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=col, padx=1, pady=1)
+
+            cal = calendar.Calendar(firstweekday=0)
+            for row, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                for col, day in enumerate(week):
+                    if day.month != month:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=row, column=col, padx=1, pady=1)
+                        continue
+                    btn = ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: select_day(d))
+                    btn.grid(row=row, column=col, padx=1, pady=1)
+
+        def ok():
+            day_text = selected_day_var.get().strip()
+            if not day_text:
+                messagebox.showwarning("尚未選日期", "請先在日曆表點選疏運停工日期。", parent=win)
+                return
+            note_text = note_var.get().strip() or "疏運"
+            self.railway_tree.add_row_after_selection(["", day_text, note_text])
+            note_var.set("")
+            selected_day_var.set("")
+            self.status_var.set(f"已新增疏運停工日：{day_text} {note_text}")
+            note_entry.focus_set()
+
+        btns = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="關閉", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="增加疏運日", command=ok).pack(side="right", padx=4)
+
+        year_spin.bind("<Return>", lambda e: render_calendar())
+        month_spin.bind("<Return>", lambda e: render_calendar())
+        year_spin.bind("<FocusOut>", lambda e: render_calendar())
+        month_spin.bind("<FocusOut>", lambda e: render_calendar())
+        render_calendar()
+        note_entry.focus_set()
+
     def build_calendar_tab(self):
+        self.add_page_edit_toggle(self.tab_calendar)
         top = ttk.Frame(self.tab_calendar)
         top.pack(fill="x")
         ttk.Label(top, text="顯示月份：").pack(side="left")
         self.cal_month_var = tk.StringVar(value=date.today().strftime("%Y-%m"))
         ttk.Entry(top, textvariable=self.cal_month_var, width=12).pack(side="left", padx=4)
-        ttk.Button(top, text="產生週曆", command=self.render_calendar).pack(side="left", padx=4)
+        ttk.Button(top, text="產生施工日曆", command=self.render_calendar).pack(side="left", padx=4)
         ttk.Button(top, text="上個月", command=lambda: self.shift_month(-1)).pack(side="left", padx=4)
         ttk.Button(top, text="下個月", command=lambda: self.shift_month(1)).pack(side="left", padx=4)
 
         self.cal_canvas = tk.Canvas(self.tab_calendar, background="white")
         self.cal_canvas.pack(fill="both", expand=True, pady=8)
         self.cal_canvas.bind("<Configure>", lambda e: self.render_calendar())
+        self.cal_canvas.bind("<MouseWheel>", lambda e: self.shift_month(-1 if e.delta > 0 else 1))
 
     def build_payment_tabs(self):
+        self.add_page_edit_toggle(self.tab_payment_contract)
         self.payment_contract_tree = self.make_payment_tree(
             self.tab_payment_contract,
             "發包工程費計價：先建立資料欄位，後續再依需求增加計價公式與報表。"
         )
+        self.add_page_edit_toggle(self.tab_payment_other)
         self.payment_other_tree = self.make_payment_tree(
             self.tab_payment_other,
             "發包以外計價：先建立資料欄位，後續再依需求增加分類與核銷流程。"
         )
+        self.add_page_edit_toggle(self.tab_payment_admin)
         self.payment_admin_tree = self.make_payment_tree(
             self.tab_payment_admin,
             "管理費計價：先建立資料欄位，後續再依需求增加管理費計算規則。"
@@ -669,15 +1958,241 @@ class App(tk.Tk):
         return tree
 
     def build_execution_tab(self):
-        ttk.Label(self.tab_execution, text="工程執行紀錄表：先建立紀錄欄位，後續可再擴充為查驗、督導、變更、會勘等分類。行內可雙擊編輯。").pack(anchor="w")
+        self.add_page_edit_toggle(self.tab_execution)
+        ttk.Label(self.tab_execution, text="工程執行紀錄表：按「新增一列」用行事曆新增；可點選標題列排序。").pack(anchor="w")
         self.execution_tree = EditableTree(
             self.tab_execution,
-            ["day", "record_type", "subject", "content", "note"],
-            ["日期", "類別", "主旨", "執行內容", "備註"],
-            [120, 140, 220, 420, 260],
-            self.mark_dirty
+            ["day", "record_type", "content", "note"],
+            ["日期", "資料類型", "內容", "備註"],
+            [120, 160, 520, 260],
+            self.mark_dirty,
+            add_command=self.open_execution_calendar_dialog
         )
         self.execution_tree.pack(fill="both", expand=True, pady=6)
+
+    def open_execution_calendar_dialog(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+
+        base_date = parse_date(self.basic_vars.get("planned_start", tk.StringVar()).get()) or date.today()
+        win = tk.Toplevel(self)
+        win.title("新增工程執行紀錄")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        selected_day_var = tk.StringVar(value="")
+        type_var = tk.StringVar(value="工作會議")
+        note_var = tk.StringVar(value="")
+
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+        cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+
+        def shift_month(delta):
+            year = year_var.get()
+            month = month_var.get() + delta
+            if month < 1:
+                month = 12
+                year -= 1
+            elif month > 12:
+                month = 1
+                year += 1
+            year_var.set(year)
+            month_var.set(month)
+            selected_day_var.set("")
+            render_calendar()
+
+        ttk.Button(top, text="上一月", command=lambda: shift_month(-1)).pack(side="left", padx=(0, 8))
+        ttk.Label(top, text="年").pack(side="left")
+        year_spin = ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=lambda: render_calendar())
+        year_spin.pack(side="left", padx=(2, 8))
+        ttk.Label(top, text="月").pack(side="left")
+        month_spin = ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=lambda: render_calendar())
+        month_spin.pack(side="left", padx=(2, 8))
+        ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
+        cal_frame.pack()
+        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        ttk.Label(form, text="資料類型").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Combobox(
+            form,
+            textvariable=type_var,
+            values=["工作會議", "會勘", "變更需求會議", "變更確認會議", "其他"],
+            state="readonly",
+            width=20
+        ).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(form, text="內容").grid(row=1, column=0, sticky="ne", padx=(0, 6), pady=4)
+        content_text = tk.Text(form, height=5, width=48, wrap="word", font=("Microsoft JhengHei UI", 10))
+        content_text.grid(row=1, column=1, sticky="ew", pady=4)
+        ttk.Label(form, text="備註").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
+        note_entry = ttk.Entry(form, textvariable=note_var, width=48)
+        note_entry.grid(row=2, column=1, sticky="ew", pady=4)
+        form.grid_columnconfigure(1, weight=1)
+
+        def select_day(day):
+            selected_day_var.set(day.strftime("%Y-%m-%d"))
+            content_text.focus_set()
+
+        def render_calendar():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+            try:
+                year = int(year_var.get())
+                month = int(month_var.get())
+                if month < 1 or month > 12:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                return
+            for col, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=col, padx=1, pady=1)
+            cal = calendar.Calendar(firstweekday=0)
+            for row, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                for col, day in enumerate(week):
+                    if day.month != month:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=row, column=col, padx=1, pady=1)
+                        continue
+                    ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: select_day(d)).grid(row=row, column=col, padx=1, pady=1)
+
+        def ok():
+            day_text = selected_day_var.get().strip()
+            if not day_text:
+                messagebox.showwarning("尚未選日期", "請先在日曆表點選日期。", parent=win)
+                return
+            content = content_text.get("1.0", "end-1c").strip()
+            if not content:
+                messagebox.showwarning("尚未輸入內容", "請輸入內容。", parent=win)
+                return
+            self.execution_tree.add_row_after_selection([day_text, type_var.get(), content, note_var.get().strip()])
+            selected_day_var.set("")
+            content_text.delete("1.0", "end")
+            note_var.set("")
+            content_text.focus_set()
+
+        btns = ttk.Frame(win, padding=(10, 0, 10, 10))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="關閉", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="增加資料", command=ok).pack(side="right", padx=4)
+        render_calendar()
+
+    def build_milestone_tab(self):
+        self.add_page_edit_toggle(self.tab_milestone)
+        ttk.Label(self.tab_milestone, text="工程大事記：起算日期與收文日期用行事曆點選；收文日期空白以粉紅色標示。").pack(anchor="w")
+        self.milestone_tree = EditableTree(
+            self.tab_milestone,
+            ["item_no", "contract_item", "start_date", "deadline_days", "deadline_date", "received_date", "overdue", "received_no", "note", "day_adjust"],
+            ["項次", "履約項目", "起算日期", "履約期限日數", "履約期限", "收文日期", "逾期", "收文文號", "註記", "日數調整"],
+            [70, 200, 120, 120, 120, 120, 80, 160, 240, 100],
+            self.mark_dirty,
+            add_command=self.open_milestone_dialog
+        )
+        self.milestone_tree.pack(fill="both", expand=True, pady=6)
+
+    def calc_milestone_row(self, values):
+        vals = (values + [""] * 10)[:10]
+        start = parse_date(vals[2])
+        try:
+            deadline_days = int(float(vals[3] or 0))
+        except ValueError:
+            deadline_days = 0
+        try:
+            adjust = int(float(vals[9] or 0))
+        except ValueError:
+            adjust = 0
+        if start and deadline_days:
+            vals[4] = fmt_date(start + timedelta(days=deadline_days + adjust))
+        received = parse_date(vals[5])
+        deadline = parse_date(vals[4])
+        vals[6] = "逾期" if received and deadline and received > deadline else ""
+        return vals
+
+    def refresh_milestone_rows(self):
+        if not hasattr(self, "milestone_tree"):
+            return
+        rows = [self.calc_milestone_row(r) for r in self.milestone_tree.get_rows()]
+        self.milestone_tree.set_rows(rows)
+        self.milestone_tree.apply_row_tags(lambda r: "pink" if len(r) > 5 and not r[5] else "")
+
+    def pick_date_for_var(self, target_var, parent):
+        base = parse_date(target_var.get()) or date.today()
+        win = tk.Toplevel(parent)
+        win.title("選擇日期")
+        win.transient(parent)
+        win.grab_set()
+        year_var = tk.IntVar(value=base.year)
+        month_var = tk.IntVar(value=base.month)
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+        cal_frame = ttk.Frame(win, padding=10)
+        cal_frame.pack()
+
+        def render():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+            y, m = int(year_var.get()), int(month_var.get())
+            for c, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=c)
+            for r, week in enumerate(calendar.Calendar(firstweekday=0).monthdatescalendar(y, m), start=1):
+                for c, day in enumerate(week):
+                    if day.month != m:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=r, column=c)
+                    else:
+                        ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: (target_var.set(fmt_date(d)), win.destroy())).grid(row=r, column=c)
+
+        def shift(delta):
+            y, m = year_var.get(), month_var.get() + delta
+            if m < 1:
+                y, m = y - 1, 12
+            elif m > 12:
+                y, m = y + 1, 1
+            year_var.set(y)
+            month_var.set(m)
+            render()
+
+        ttk.Button(top, text="上一月", command=lambda: shift(-1)).pack(side="left")
+        ttk.Spinbox(top, from_=base.year - 30, to=base.year + 30, textvariable=year_var, width=8, command=render).pack(side="left", padx=4)
+        ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=render).pack(side="left", padx=4)
+        ttk.Button(top, text="下一月", command=lambda: shift(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render())).pack(side="left", padx=8)
+        render()
+
+    def open_milestone_dialog(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先解除鎖定。")
+            return
+        win = tk.Toplevel(self)
+        win.title("新增工程大事記")
+        win.transient(self)
+        win.grab_set()
+        vars_ = {k: tk.StringVar() for k in ["item_no", "contract_item", "start_date", "deadline_days", "received_date", "received_no", "note", "day_adjust"]}
+        labels = [("項次", "item_no"), ("履約項目", "contract_item"), ("起算日期", "start_date"), ("履約期限日數", "deadline_days"), ("收文日期", "received_date"), ("收文文號", "received_no"), ("註記", "note"), ("日數調整", "day_adjust")]
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        for i, (label, key) in enumerate(labels):
+            ttk.Label(form, text=label).grid(row=i, column=0, sticky="e", padx=4, pady=3)
+            ent = ttk.Entry(form, textvariable=vars_[key], width=32)
+            ent.grid(row=i, column=1, sticky="ew", padx=4, pady=3)
+            if key in ("start_date", "received_date"):
+                ttk.Button(form, text="▼", width=3, command=lambda v=vars_[key]: self.pick_date_for_var(v, win)).grid(row=i, column=2, padx=2)
+        form.grid_columnconfigure(1, weight=1)
+
+        def ok():
+            row = self.calc_milestone_row([
+                vars_["item_no"].get(), vars_["contract_item"].get(), vars_["start_date"].get(), vars_["deadline_days"].get(),
+                "", vars_["received_date"].get(), "", vars_["received_no"].get(), vars_["note"].get(), vars_["day_adjust"].get()
+            ])
+            self.milestone_tree.add_row_after_selection(row)
+            self.refresh_milestone_rows()
+            win.destroy()
+
+        ttk.Button(win, text="新增", command=ok).pack(side="right", padx=10, pady=10)
+        ttk.Button(win, text="取消", command=win.destroy).pack(side="right", pady=10)
 
     def build_status_tab(self):
         box = ttk.LabelFrame(self.tab_status, text="工程執行狀態", padding=12)
@@ -721,9 +2236,9 @@ class App(tk.Tk):
 
     def assign_tree_edit_guards(self):
         for name in [
-            "bid_tree", "holiday_tree", "weather_tree", "railway_tree",
+            "bid_tree", "holiday_tree", "workday_tree", "weather_tree", "railway_tree",
             "payment_contract_tree", "payment_other_tree", "payment_admin_tree",
-            "execution_tree"
+            "execution_tree", "milestone_tree"
         ]:
             if hasattr(self, name):
                 getattr(self, name).can_edit = self.can_edit
@@ -733,10 +2248,15 @@ class App(tk.Tk):
         for w in getattr(self, "edit_widgets", []):
             try:
                 w.configure(state="normal" if unlocked else "disabled")
+                if isinstance(w, tk.Text):
+                    w.configure(foreground="black" if unlocked else "#1f4e79")
             except tk.TclError:
                 pass
         self.assign_tree_edit_guards()
-        if not self.project_password_hash:
+        manual_var = getattr(self, "data_edit_enabled_var", None)
+        if manual_var is not None and not manual_var.get():
+            self.lock_state_var.set("資料編輯鎖定")
+        elif not self.project_password_hash:
             self.lock_state_var.set("未設定密碼")
         elif unlocked:
             self.lock_state_var.set("已解鎖")
@@ -747,9 +2267,7 @@ class App(tk.Tk):
         if not self.current_project_id:
             return
         if not self.project_password_hash:
-            self.edit_unlocked = True
-            self.apply_edit_lock_state()
-            self.status_var.set("此工程未設定密碼，可直接編輯")
+            messagebox.showwarning("尚未鎖定", "此工程尚未設定編輯密碼。請先輸入密碼並按「鎖定」。")
             return
         pwd = self.edit_password_var.get()
         if len(pwd) < 3:
@@ -763,6 +2281,39 @@ class App(tk.Tk):
             self.edit_unlocked = False
             self.apply_edit_lock_state()
             messagebox.showerror("密碼錯誤", "編輯密碼不正確。")
+
+    def lock_project(self):
+        if not self.current_project_id:
+            return
+        pwd = self.edit_password_var.get()
+        if len(pwd) < 3:
+            messagebox.showwarning("密碼長度不足", "請先輸入至少 3 個字元的編輯密碼，再按「鎖定」。")
+            return
+        self.save_current()
+        self.db.save_password_hash(self.current_project_id, hash_password(pwd))
+        self.project_password_hash = self.db.get_password_hash(self.current_project_id)
+        self.edit_unlocked = False
+        self.edit_password_var.set("")
+        self.apply_edit_lock_state()
+        self.status_var.set("已使用 SHA256 儲存密碼並鎖定編輯")
+
+    def clear_project_password(self):
+        if not self.current_project_id:
+            return
+        if self.project_password_hash and not self.edit_unlocked:
+            messagebox.showwarning("尚未解鎖", "請先輸入正確密碼並解鎖後，才能取消密碼。")
+            return
+        if not self.project_password_hash:
+            self.status_var.set("此工程目前未設定密碼")
+            return
+        if not messagebox.askyesno("取消密碼", "確定要取消此工程的編輯密碼嗎？取消後重新開啟也不會自動鎖定。"):
+            return
+        self.db.save_password_hash(self.current_project_id, "")
+        self.project_password_hash = ""
+        self.edit_unlocked = True
+        self.edit_password_var.set("")
+        self.apply_edit_lock_state()
+        self.status_var.set("已取消密碼，不再自動鎖定")
 
     def set_project_password(self):
         if not self.current_project_id:
@@ -790,7 +2341,7 @@ class App(tk.Tk):
 
     def safe_amount(self, value):
         try:
-            return float(str(value).replace(",", "").strip() or 0)
+            return float(str(value).replace(",", "").replace("元", "").replace("%", "").strip() or 0)
         except ValueError:
             return 0.0
 
@@ -804,7 +2355,7 @@ class App(tk.Tk):
         return total
 
     def money_text(self, value):
-        return f"{value:,.0f}"
+        return f"{value:,.0f}元"
 
     def shift_month(self, delta):
         ym = self.cal_month_var.get().strip()
@@ -855,6 +2406,21 @@ class App(tk.Tk):
         self.db.set_setting("last_project_id", pid)
         self.load_projects()
 
+    def rename_current_project(self):
+        if not self.current_project_id:
+            return
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        current_name = self.basic_vars["name"].get().strip()
+        new_name = simpledialog.askstring("修改工程名稱", "請輸入新的工程名稱：", initialvalue=current_name, parent=self)
+        if not new_name:
+            return
+        self.basic_vars["name"].set(new_name.strip())
+        self.save_current()
+        self.load_projects()
+        self.status_var.set("工程名稱已修改")
+
     def on_project_selected(self, *_):
         label = self.project_combo.get()
         pid = self.project_map.get(label)
@@ -869,16 +2435,30 @@ class App(tk.Tk):
 
         for key in self.basic_vars:
             self.basic_vars[key].set(p[key] if key in p.keys() and p[key] is not None else "")
+        if hasattr(self, "project_description_text"):
+            self.project_description_text.delete("1.0", "end")
+            self.project_description_text.insert("1.0", p["project_description"] if "project_description" in p.keys() and p["project_description"] is not None else "")
         self.day_type_var.set(p["day_type"] or "工作日")
 
         self.bid_tree.set_rows([[r["round_no"], r["online_date"], r["open_date"]] for r in self.db.bids(pid)])
-        self.holiday_tree.set_rows([[r["day"], r["name"]] for r in self.db.rows("holidays", pid)])
+        self.holiday_tree.set_rows([["✓" if r["excluded"] else "", r["day"], r["name"]] for r in self.db.rows("holidays", pid)])
+        self.workday_tree.set_rows([["✓" if r["excluded"] else "", r["day"], r["name"]] for r in self.db.rows("workdays", pid)])
+        self.apply_year_separators(self.holiday_tree)
+        self.apply_year_separators(self.workday_tree)
         self.weather_tree.set_rows([[r["day"], r["morning"], r["afternoon"], r["typhoon"], r["site"], r["note"]] for r in self.db.rows("weather", pid)])
-        self.railway_tree.set_rows([[r["day"], r["note"]] for r in self.db.rows("railway", pid)])
+        self.railway_tree.set_rows([["✓" if r["excluded"] else "", r["day"], r["note"]] for r in self.db.rows("railway", pid)])
         self.payment_contract_tree.set_rows([[r["day"], r["item"], r["voucher_no"], r["amount"], r["note"]] for r in self.db.rows("payment_contract", pid)])
         self.payment_other_tree.set_rows([[r["day"], r["item"], r["voucher_no"], r["amount"], r["note"]] for r in self.db.rows("payment_other", pid)])
         self.payment_admin_tree.set_rows([[r["day"], r["item"], r["voucher_no"], r["amount"], r["note"]] for r in self.db.rows("payment_admin", pid)])
-        self.execution_tree.set_rows([[r["day"], r["record_type"], r["subject"], r["content"], r["note"]] for r in self.db.rows("execution_records", pid)])
+        self.execution_tree.set_rows([
+            [r["day"], r["record_type"], "\n".join(x for x in [r["subject"], r["content"]] if x), r["note"]]
+            for r in self.db.rows("execution_records", pid)
+        ])
+        self.milestone_tree.set_rows([
+            self.calc_milestone_row([r["item_no"], r["contract_item"], r["start_date"], r["deadline_days"], r["deadline_date"], r["received_date"], r["overdue"], r["received_no"], r["note"], r["day_adjust"]])
+            for r in self.db.rows("project_milestones", pid)
+        ])
+        self.refresh_milestone_rows()
         self.execution_status_var.set(self.db.get_status(pid) or "規劃中")
         self.project_password_hash = self.db.get_password_hash(pid)
         self.edit_unlocked = False if self.project_password_hash else True
@@ -890,69 +2470,159 @@ class App(tk.Tk):
         self.recalculate()
         self.render_calendar()
         self.apply_edit_lock_state()
+        self.undo_snapshot = None
+        self.last_state = self.capture_state()
         self.status_var.set(f"已載入：{p['name']}")
 
     def collect_exclude_dates(self, include_railway=False):
         days = set()
         for row in self.holiday_tree.get_rows():
-            d = parse_date(row[0])
+            if row and row[0] == "✓":
+                continue
+            d = parse_date(row[1] if len(row) > 1 else "")
             if d:
                 days.add(d)
         if include_railway:
             for row in self.railway_tree.get_rows():
-                d = parse_date(row[0])
+                if row and row[0] == "✓":
+                    continue
+                d = parse_date(row[1] if len(row) > 1 else "")
                 if d:
                     days.add(d)
         return days
 
+    def collect_railway_dates(self):
+        days = set()
+        for row in self.railway_tree.get_rows():
+            if row and row[0] == "✓":
+                continue
+            d = parse_date(row[1] if len(row) > 1 else "")
+            if d:
+                days.add(d)
+        return days
+
+    def collect_workday_dates(self):
+        days = set()
+        for row in self.workday_tree.get_rows():
+            if row and row[0] == "✓":
+                continue
+            d = parse_date(row[1] if len(row) > 1 else "")
+            if d:
+                days.add(d)
+        return days
+
+    def collect_weather_workdays(self):
+        rows = {}
+        for row in self.weather_tree.get_rows():
+            d = parse_date(row[0] if row else "")
+            if d:
+                rows[d] = (
+                    self.safe_amount(row[1] if len(row) > 1 else 0),
+                    self.safe_amount(row[2] if len(row) > 2 else 0),
+                )
+        return rows
+
+    def daily_work_increment(self, d, holiday_dates=None, railway_dates=None, workday_dates=None, weather_rows=None):
+        if holiday_dates is None:
+            holiday_dates = self.collect_exclude_dates(False)
+        if railway_dates is None:
+            railway_dates = self.collect_railway_dates()
+        if workday_dates is None:
+            workday_dates = self.collect_workday_dates()
+        if weather_rows is None:
+            weather_rows = self.collect_weather_workdays()
+
+        if d in railway_dates:
+            return 0
+        if d in workday_dates:
+            return sum(weather_rows[d]) if d in weather_rows else 1
+        if d in holiday_dates:
+            return 0
+        if d in weather_rows:
+            return sum(weather_rows[d])
+        if self.day_type_var.get() == "日曆天":
+            return 1
+        return 1 if d.weekday() < 5 else 0
+
+    def count_project_workdays_until(self, start, end):
+        if not start or not end or end < start:
+            return 0.0
+        holiday_dates = self.collect_exclude_dates(False)
+        railway_dates = self.collect_railway_dates()
+        workday_dates = self.collect_workday_dates()
+        weather_rows = self.collect_weather_workdays()
+
+        total = 0.0
+        cur = start
+        while cur <= end:
+            total += self.daily_work_increment(cur, holiday_dates, railway_dates, workday_dates, weather_rows)
+            cur += timedelta(days=1)
+        return total
+
     def recalculate(self):
         if not self.current_project_id:
             return
-        start = parse_date(self.basic_vars["actual_start"].get()) or parse_date(self.basic_vars["planned_start"].get())
-        planned_start = parse_date(self.basic_vars["planned_start"].get())
+        self.recalculating = True
         try:
-            days = int(float(self.basic_vars["contract_days"].get() or 0))
-        except ValueError:
-            days = 0
+            start = parse_date(self.basic_vars["actual_start"].get()) or parse_date(self.basic_vars["planned_start"].get())
+            planned_start = parse_date(self.basic_vars["planned_start"].get())
+            try:
+                days = int(float(self.basic_vars["contract_days"].get() or 0))
+            except ValueError:
+                days = 0
 
-        day_type = self.day_type_var.get()
-        holiday_ex = self.collect_exclude_dates(False)
-        transport_ex = self.collect_exclude_dates(True)
+            day_type = self.day_type_var.get()
+            holiday_ex = self.collect_exclude_dates(False)
+            transport_ex = self.collect_exclude_dates(True)
 
-        if day_type == "工作日":
-            finish_holiday = add_work_days(planned_start, days, holiday_ex)
-            finish_transport = add_work_days(planned_start, days, transport_ex)
-        else:
-            finish_holiday = add_calendar_days(planned_start, days)
-            # 日曆天原則上不扣例假；疏運表仍視為停工順延。
-            finish_transport = add_calendar_days(planned_start, days)
-            if finish_transport:
-                extra = sum(1 for d in transport_ex if planned_start and planned_start <= d <= finish_transport)
-                finish_transport = finish_transport + timedelta(days=extra)
+            if day_type == "工作日":
+                finish_holiday = add_work_days(planned_start, days, holiday_ex)
+                finish_transport = add_work_days(planned_start, days, transport_ex)
+            else:
+                finish_holiday = add_calendar_days(planned_start, days)
+                # 日曆天原則上不扣例假；疏運表仍視為停工順延。
+                finish_transport = add_calendar_days(planned_start, days)
+                if finish_transport:
+                    extra = sum(1 for d in transport_ex if planned_start and planned_start <= d <= finish_transport)
+                    finish_transport = finish_transport + timedelta(days=extra)
 
-        finish_holiday_text = fmt_date(finish_holiday)
-        finish_transport_text = fmt_date(finish_transport)
-        if self.basic_vars["planned_finish_holiday"].get() != finish_holiday_text:
-            self.basic_vars["planned_finish_holiday"].set(finish_holiday_text)
-        if self.basic_vars["planned_finish_transport"].get() != finish_transport_text:
-            self.basic_vars["planned_finish_transport"].set(finish_transport_text)
+            finish_holiday_text = fmt_date(finish_holiday)
+            finish_transport_text = fmt_date(finish_transport)
+            if self.basic_vars["planned_finish_holiday"].get() != finish_holiday_text:
+                self.basic_vars["planned_finish_holiday"].set(finish_holiday_text)
+            if self.basic_vars["planned_finish_transport"].get() != finish_transport_text:
+                self.basic_vars["planned_finish_transport"].set(finish_transport_text)
 
-        today = date.today()
-        elapsed = (today - start).days + 1 if start and today >= start else 0
-        workday_no = count_work_days_until(start, today, holiday_ex | set(d for d in transport_ex if d)) if start else 0
+            auto_totals = {
+                "contract_budget_total": self.safe_amount(self.basic_vars.get("contract_budget_net", tk.StringVar()).get()) + self.safe_amount(self.basic_vars.get("contract_budget_tax", tk.StringVar()).get()),
+                "contract_award_total": self.safe_amount(self.basic_vars.get("contract_award_net", tk.StringVar()).get()) + self.safe_amount(self.basic_vars.get("contract_award_tax", tk.StringVar()).get()),
+                "deposit_total": self.safe_amount(self.basic_vars.get("deposit_difference", tk.StringVar()).get()) + self.safe_amount(self.basic_vars.get("deposit_performance", tk.StringVar()).get()),
+                "warranty_deposit": self.safe_amount(self.basic_vars.get("final_contract_amount", tk.StringVar()).get()) * (self.safe_amount(self.basic_vars.get("warranty_rate", tk.StringVar()).get()) / 100),
+            }
+            for key, value in auto_totals.items():
+                if key in self.basic_vars:
+                    text = self.money_text(value) if value else ""
+                    if self.basic_vars[key].get() != text:
+                        self.basic_vars[key].set(text)
 
-        self.summary_vars["start"].set(fmt_date(start))
-        self.summary_vars["finish1"].set(fmt_date(finish_holiday))
-        self.summary_vars["finish2"].set(fmt_date(finish_transport))
-        self.summary_vars["elapsed"].set(str(elapsed))
-        self.summary_vars["workday_no"].set(str(workday_no))
-        self.summary_vars["contract_total"].set(self.money_text(self.tree_amount_total("payment_contract_tree")))
-        self.summary_vars["other_total"].set(self.money_text(self.tree_amount_total("payment_other_tree")))
-        self.summary_vars["admin_total"].set(self.money_text(self.tree_amount_total("payment_admin_tree")))
-        self.summary_vars["execution_status"].set(self.execution_status_var.get() if hasattr(self, "execution_status_var") else "")
+            today = date.today()
+            elapsed = (today - start).days + 1 if start and today >= start else 0
+            workday_no = self.count_project_workdays_until(start, today) if start else 0
 
-        if not self.loading:
-            self.render_calendar()
+            self.summary_vars["start"].set(fmt_date(start))
+            self.summary_vars["finish1"].set(fmt_date(finish_holiday))
+            self.summary_vars["finish2"].set(fmt_date(finish_transport))
+            self.summary_vars["elapsed"].set(str(elapsed))
+            self.summary_vars["workday_no"].set(f"{float(workday_no):.1f}")
+            self.summary_vars["contract_total"].set(self.money_text(self.tree_amount_total("payment_contract_tree")))
+            self.summary_vars["other_total"].set(self.money_text(self.tree_amount_total("payment_other_tree")))
+            self.summary_vars["admin_total"].set(self.money_text(self.tree_amount_total("payment_admin_tree")))
+            self.summary_vars["execution_status"].set(self.execution_status_var.get() if hasattr(self, "execution_status_var") else "")
+
+            if not self.loading:
+                self.render_calendar()
+        finally:
+            self.recalculating = False
 
     def save_current(self):
         if not self.current_project_id:
@@ -962,6 +2632,8 @@ class App(tk.Tk):
             return
 
         data = {k: v.get().strip() for k, v in self.basic_vars.items()}
+        if hasattr(self, "project_description_text"):
+            data["project_description"] = self.project_description_text.get("1.0", "end-1c").strip()
         data["day_type"] = self.day_type_var.get()
         try:
             data["contract_days"] = int(float(data.get("contract_days") or 0))
@@ -975,8 +2647,16 @@ class App(tk.Tk):
             bids.append({"round_no": r[0] or 1, "online_date": r[1], "open_date": r[2]})
         self.db.replace_rows("bids", self.current_project_id, bids)
 
-        holidays = [{"day": r[0], "name": r[1]} for r in self.holiday_tree.get_rows()]
+        holidays = [
+            {"excluded": 1 if len(r) > 0 and r[0] == "✓" else 0, "day": r[1] if len(r) > 1 else "", "name": r[2] if len(r) > 2 else ""}
+            for r in self.holiday_tree.get_rows()
+        ]
         self.db.replace_rows("holidays", self.current_project_id, holidays)
+        workdays = [
+            {"excluded": 1 if len(r) > 0 and r[0] == "✓" else 0, "day": r[1] if len(r) > 1 else "", "name": r[2] if len(r) > 2 else ""}
+            for r in self.workday_tree.get_rows()
+        ]
+        self.db.replace_rows("workdays", self.current_project_id, workdays)
 
         weather = []
         for r in self.weather_tree.get_rows():
@@ -986,7 +2666,10 @@ class App(tk.Tk):
             })
         self.db.replace_rows("weather", self.current_project_id, weather)
 
-        railway = [{"day": r[0], "note": r[1]} for r in self.railway_tree.get_rows()]
+        railway = [
+            {"excluded": 1 if len(r) > 0 and r[0] == "✓" else 0, "day": r[1] if len(r) > 1 else "", "note": r[2] if len(r) > 2 else ""}
+            for r in self.railway_tree.get_rows()
+        ]
         self.db.replace_rows("railway", self.current_project_id, railway)
 
         for table_name, tree_attr in [
@@ -1010,15 +2693,26 @@ class App(tk.Tk):
             execution_rows.append({
                 "day": r[0] if len(r) > 0 else "",
                 "record_type": r[1] if len(r) > 1 else "",
-                "subject": r[2] if len(r) > 2 else "",
-                "content": r[3] if len(r) > 3 else "",
-                "note": r[4] if len(r) > 4 else "",
+                "subject": "",
+                "content": r[2] if len(r) > 2 else "",
+                "note": r[3] if len(r) > 3 else "",
             })
         self.db.replace_rows("execution_records", self.current_project_id, execution_rows)
+        self.refresh_milestone_rows()
+        milestone_rows = []
+        for r in self.milestone_tree.get_rows():
+            row = self.calc_milestone_row(r)
+            milestone_rows.append({
+                "item_no": row[0], "contract_item": row[1], "start_date": row[2],
+                "deadline_days": row[3] or 0, "deadline_date": row[4], "received_date": row[5],
+                "overdue": row[6], "received_no": row[7], "note": row[8], "day_adjust": row[9] or 0
+            })
+        self.db.replace_rows("project_milestones", self.current_project_id, milestone_rows)
         self.db.save_status(self.current_project_id, self.execution_status_var.get() if hasattr(self, "execution_status_var") else "")
 
         self.db.set_setting("last_project_id", self.current_project_id)
         self.dirty = False
+        self.last_state = self.capture_state()
         self.status_var.set("已自動儲存：" + datetime.now().strftime("%H:%M:%S"))
 
     def backup_database(self):
@@ -1049,6 +2743,191 @@ class App(tk.Tk):
             except OSError:
                 pass
 
+    def backup_database_offsite(self):
+        self.save_current()
+        folder = filedialog.askdirectory(title="選擇異地備份儲存資料夾")
+        if not folder:
+            return
+        timestamp = datetime.now().strftime("%Y%m%d%H%M")
+        out_path = os.path.join(folder, f"TR_FxWork_backup_{timestamp}.zip")
+        tmp_db = os.path.join(tempfile.gettempdir(), f"TR_FxWork_backup_{timestamp}.db")
+        try:
+            with sqlite3.connect(DB_FILE) as src, sqlite3.connect(tmp_db) as dst:
+                src.backup(dst)
+            with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.write(tmp_db, arcname="TR_FxWork.db")
+                zf.writestr("README_異地備份說明.txt", f"TR_FxWork 異地備份\n備份時間：{timestamp}\n")
+            messagebox.showinfo("異地備份完成", f"已完成異地備份：\n{out_path}")
+        except Exception as exc:
+            messagebox.showerror("異地備份失敗", str(exc))
+        finally:
+            try:
+                if os.path.exists(tmp_db):
+                    os.remove(tmp_db)
+            except OSError:
+                pass
+
+    def exportable_pages(self):
+        return {
+            "工程基本資料": None,
+            "招標資訊": self.bid_tree,
+            "假期表": self.holiday_tree,
+            "補班日表": self.workday_tree,
+            "晴雨表": self.weather_tree,
+            "鐵路疏運表": self.railway_tree,
+            "發包工程費計價": self.payment_contract_tree,
+            "發包以外計價": self.payment_other_tree,
+            "管理費計價": self.payment_admin_tree,
+            "工程執行紀錄表": self.execution_tree,
+            "工程大事記": self.milestone_tree,
+        }
+
+    def basic_page_export_rows(self):
+        rows = [["欄位", "內容"]]
+        labels = {
+            "name": "工程名稱", "exec_no": "工程執行號", "budget_no": "動支請示單號",
+            "purchase_contract_no": "採購契約號碼", "award_date": "決標日期", "contract_date": "簽約日期",
+            "planned_start": "預訂開工日", "actual_start": "實際開工日", "contract_days": "契約工期",
+            "planned_finish_holiday": "預訂竣工日（例假表）", "planned_finish_transport": "預訂竣工日（疏運表）",
+            "actual_finish": "實際竣工日", "contractor": "承攬商", "company_address": "公司地址",
+            "responsible_person": "負責人", "contact_person": "聯絡人", "phone": "電話",
+            "fax": "傳真電話", "tax_id": "統一編號", "project_description": "工程說明",
+            "contract_budget_net": "發包工程費-預算(未稅)", "contract_award_net": "發包工程費-決標(未稅)",
+            "contract_budget_tax": "發包工程費-稅金(預算)", "contract_award_tax": "發包工程費-稅金(決標)",
+            "contract_budget_total": "發包工程費-預算(含稅)", "contract_award_total": "發包工程費-決標(契約金額含稅)",
+            "labor_budget": "包工費-預算", "labor_award": "包工費-決標",
+            "deposit_difference": "差額保證金", "deposit_performance": "履約保證金", "deposit_total": "保證金總額",
+            "final_contract_amount": "竣工發包工程費", "warranty_rate": "保固金比例", "warranty_deposit": "保固保證金",
+        }
+        for key, label in labels.items():
+            if key == "project_description" and hasattr(self, "project_description_text"):
+                value = self.project_description_text.get("1.0", "end-1c")
+            else:
+                value = self.basic_vars[key].get() if key in self.basic_vars else ""
+            rows.append([label, value])
+        rows.append(["工期類型", self.day_type_var.get()])
+        rows.append(["工程執行狀態", self.execution_status_var.get() if hasattr(self, "execution_status_var") else ""])
+        rows.append([])
+        rows.append(["招標資訊"])
+        rows.append([self.bid_tree.tree.heading(col)["text"] for col in self.bid_tree.columns])
+        rows.extend(self.bid_tree.get_rows())
+        return rows
+
+    def table_page_export_rows(self, page_name):
+        tree = self.exportable_pages()[page_name]
+        return [[tree.tree.heading(col)["text"] for col in tree.columns]] + tree.get_rows()
+
+    def export_page_excel(self):
+        self.save_current()
+        pages = self.exportable_pages()
+        win = tk.Toplevel(self)
+        win.title("匯出分頁檔案")
+        win.transient(self)
+        win.grab_set()
+        vars_by_page = {}
+        box = ttk.Frame(win, padding=12)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="請勾選要匯出的分頁").pack(anchor="w", pady=(0, 6))
+        for page_name in pages:
+            var = tk.BooleanVar(value=False)
+            vars_by_page[page_name] = var
+            ttk.Checkbutton(box, text=page_name, variable=var).pack(anchor="w", pady=2)
+
+        def do_export():
+            selected = [name for name, var in vars_by_page.items() if var.get()]
+            if not selected:
+                messagebox.showwarning("尚未選擇", "請至少勾選一個分頁。", parent=win)
+                return
+            folder = filedialog.askdirectory(title="選擇匯出 Excel 儲存資料夾", parent=win)
+            if not folder:
+                return
+            timestamp = datetime.now().strftime("%Y%m%d%H%M")
+            exported = []
+            try:
+                for page_name in selected:
+                    data = self.basic_page_export_rows() if page_name == "工程基本資料" else self.table_page_export_rows(page_name)
+                    safe_name = "".join(ch if ch not in r'\/:*?"<>|' else "_" for ch in page_name)
+                    path = os.path.join(folder, f"{safe_name}_{timestamp}.xlsx")
+                    write_simple_xlsx(path, page_name, data)
+                    exported.append(path)
+                messagebox.showinfo("匯出完成", "已匯出：\n" + "\n".join(exported), parent=win)
+                win.destroy()
+            except Exception as exc:
+                messagebox.showerror("匯出失敗", str(exc), parent=win)
+
+        btns = ttk.Frame(box)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="匯出", command=do_export).pack(side="right", padx=4)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="right", padx=4)
+
+    def import_basic_page_rows(self, rows):
+        label_to_key = {
+            "工程名稱": "name", "工程執行號": "exec_no", "動支請示單號": "budget_no",
+            "採購契約號碼": "purchase_contract_no", "決標日期": "award_date", "簽約日期": "contract_date",
+            "預訂開工日": "planned_start", "實際開工日": "actual_start", "契約工期": "contract_days",
+            "預訂竣工日（例假表）": "planned_finish_holiday", "預訂竣工日（疏運表）": "planned_finish_transport",
+            "實際竣工日": "actual_finish", "承攬商": "contractor", "公司地址": "company_address",
+            "負責人": "responsible_person", "聯絡人": "contact_person", "電話": "phone",
+            "傳真電話": "fax", "統一編號": "tax_id", "工程說明": "project_description",
+            "發包工程費-預算(未稅)": "contract_budget_net", "發包工程費-決標(未稅)": "contract_award_net",
+            "發包工程費-稅金(預算)": "contract_budget_tax", "發包工程費-稅金(決標)": "contract_award_tax",
+            "發包工程費-預算(含稅)": "contract_budget_total", "發包工程費-決標(契約金額含稅)": "contract_award_total",
+            "包工費-預算": "labor_budget", "包工費-決標": "labor_award",
+            "差額保證金": "deposit_difference", "履約保證金": "deposit_performance", "保證金總額": "deposit_total",
+            "竣工發包工程費": "final_contract_amount", "保固金比例": "warranty_rate", "保固保證金": "warranty_deposit",
+        }
+        for row in rows:
+            if len(row) < 2:
+                continue
+            key = label_to_key.get(row[0])
+            if not key:
+                if row[0] == "工期類型":
+                    self.day_type_var.set(row[1])
+                elif row[0] == "工程執行狀態" and hasattr(self, "execution_status_var"):
+                    self.execution_status_var.set(row[1])
+                continue
+            if key == "project_description" and hasattr(self, "project_description_text"):
+                self.project_description_text.delete("1.0", "end")
+                self.project_description_text.insert("1.0", row[1])
+            elif key in self.basic_vars:
+                self.basic_vars[key].set(row[1])
+
+    def import_page_excel(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "請先解除鎖定後再匯入。")
+            return
+        path = filedialog.askopenfilename(
+            title="選擇要匯入的 Excel 檔",
+            filetypes=[("Excel Workbook", "*.xlsx")]
+        )
+        if not path:
+            return
+        try:
+            rows = read_simple_xlsx(path)
+            if not rows or not rows[0]:
+                raise RuntimeError("Excel 第一行找不到分頁名稱")
+            page_name = rows[0][0].strip()
+            pages = self.exportable_pages()
+            if page_name not in pages:
+                raise RuntimeError(f"無法辨識分頁名稱：{page_name}")
+            data_rows = rows[2:] if len(rows) >= 2 else []
+            if page_name == "工程基本資料":
+                self.import_basic_page_rows(data_rows)
+                self.mark_dirty()
+                self.save_current()
+                messagebox.showinfo("匯入完成", f"已匯入到分頁：{page_name}")
+                return
+            expected_cols = len(pages[page_name].columns)
+            normalized = [(r + [""] * expected_cols)[:expected_cols] for r in data_rows if any(str(v).strip() for v in r)]
+            pages[page_name].set_rows(normalized)
+            if page_name == "工程大事記":
+                self.refresh_milestone_rows()
+            self.mark_dirty()
+            self.save_current()
+            messagebox.showinfo("匯入完成", f"已匯入到分頁：{page_name}")
+        except Exception as exc:
+            messagebox.showerror("匯入失敗", str(exc))
+
     def _table_exists(self, conn, table):
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         return row is not None
@@ -1063,7 +2942,7 @@ class App(tk.Tk):
             "name", "exec_no", "budget_no", "award_date", "planned_start", "actual_start",
             "contract_days", "day_type", "planned_finish_holiday", "planned_finish_transport",
             "actual_finish", "updated_at", "password_hash"
-        ]
+        ] + PROJECT_EXTRA_FIELDS
         vals = [p[f] if f in p.keys() else "" for f in fields]
         cur = self.db.conn.execute(
             "INSERT INTO projects(" + ",".join(fields) + ") VALUES(" + ",".join("?" for _ in fields) + ")",
@@ -1074,12 +2953,14 @@ class App(tk.Tk):
         copy_specs = {
             "bids": ["round_no", "online_date", "open_date"],
             "holidays": ["day", "name"],
+            "workdays": ["day", "name"],
             "weather": ["day", "morning", "afternoon", "typhoon", "site", "note"],
             "railway": ["day", "note"],
             "payment_contract": ["day", "item", "voucher_no", "amount", "note"],
             "payment_other": ["day", "item", "voucher_no", "amount", "note"],
             "payment_admin": ["day", "item", "voucher_no", "amount", "note"],
             "execution_records": ["day", "record_type", "subject", "content", "note"],
+            "project_milestones": ["item_no", "contract_item", "start_date", "deadline_days", "deadline_date", "received_date", "overdue", "received_no", "note", "day_adjust"],
         }
         for table, cols in copy_specs.items():
             if not self._table_exists(src, table):
@@ -1222,17 +3103,17 @@ class App(tk.Tk):
 
         holidays = {}
         for r in self.holiday_tree.get_rows():
-            d = parse_date(r[0])
+            if r and r[0] == "✓":
+                continue
+            d = parse_date(r[1] if len(r) > 1 else "")
             if d:
-                holidays[d] = r[1] or "假日"
+                holidays[d] = (r[2] if len(r) > 2 else "") or "假日"
 
-        railway = set()
-        for r in self.railway_tree.get_rows():
-            d = parse_date(r[0])
-            if d:
-                railway.add(d)
+        railway = self.collect_railway_dates()
+        workdays = self.collect_workday_dates()
 
         weather = self.weather_text_map()
+        weather_rows = self.collect_weather_workdays()
 
         width = max(c.winfo_width(), 900)
         height = max(c.winfo_height(), 520)
@@ -1253,7 +3134,7 @@ class App(tk.Tk):
             "header": "#ddebf7",
         }
 
-        c.create_text(width/2, 15, text=f"{y} 年 {m:02d} 月 週曆總表", font=("Microsoft JhengHei UI", 14, "bold"))
+        c.create_text(width/2, 15, text=f"{y} 年 {m:02d} 月 施工日曆", font=("Microsoft JhengHei UI", 14, "bold"))
 
         for i, wd in enumerate(WEEKDAY_NAMES):
             x0 = left_w + i * cell_w
@@ -1266,6 +3147,23 @@ class App(tk.Tk):
         row_labels = ["假日", "疏運日", "雨天", "工作日數"]
         work_count = 0
         holiday_ex = self.collect_exclude_dates(True)
+        holiday_dates = self.collect_exclude_dates(False)
+        start_count_date = parse_date(self.basic_vars["actual_start"].get()) or parse_date(self.basic_vars["planned_start"].get())
+        finish_count_date = (
+            parse_date(self.basic_vars["planned_finish_transport"].get())
+            or parse_date(self.basic_vars["planned_finish_holiday"].get())
+            or parse_date(self.basic_vars["actual_finish"].get())
+        )
+
+        def day_increment(d):
+            return self.daily_work_increment(d, holiday_dates, railway, workdays, weather_rows)
+
+        if start_count_date:
+            cur = start_count_date
+            first_of_month = date(y, m, 1)
+            while cur < first_of_month and (not finish_count_date or cur <= finish_count_date):
+                work_count += day_increment(cur)
+                cur += timedelta(days=1)
 
         for wi, week in enumerate(weeks):
             y0 = top_h + 25 + wi * week_h
@@ -1282,7 +3180,15 @@ class App(tk.Tk):
 
                 # 第1行：日期
                 c.create_rectangle(x0, y0, x0+cell_w, y0+row_h, fill=alpha_fill, outline=colors["grid"])
-                c.create_text(x0+cell_w-5, y0+row_h/2, text=d.strftime("%m/%d") if in_month else "", anchor="e", font=("Microsoft JhengHei UI", 9, "bold"))
+                date_fill = "red" if in_month and d == date.today() else "black"
+                date_font = ("Microsoft JhengHei UI", 9, "bold") if in_month and d == date.today() else ("Microsoft JhengHei UI", 9, "bold")
+                c.create_text(
+                    x0+cell_w-5, y0+row_h/2,
+                    text=d.strftime("%m/%d") if in_month else "",
+                    anchor="e",
+                    font=date_font,
+                    fill=date_fill
+                )
 
                 # 第2行：假日
                 htxt = holidays.get(d, "") if in_month else ""
@@ -1303,10 +3209,15 @@ class App(tk.Tk):
                 c.create_text(x0+cell_w/2, y0+row_h*3.5, text=wtxt, font=("Microsoft JhengHei UI", 9))
 
                 # 第5個視覺區塊：工作日數累計
-                is_work = in_month and d.weekday() < 5 and d not in holiday_ex
-                if is_work:
-                    work_count += 1
-                    txt = str(work_count)
+                in_contract_period = (
+                    in_month
+                    and start_count_date
+                    and finish_count_date
+                    and start_count_date <= d <= finish_count_date
+                )
+                if in_contract_period:
+                    work_count += day_increment(d)
+                    txt = f"{work_count:g}" if work_count else ""
                 else:
                     txt = ""
                 c.create_rectangle(x0, y0+4*row_h, x0+cell_w, y0+5*row_h, fill="#ffffff", outline=colors["grid"])
