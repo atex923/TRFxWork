@@ -2550,7 +2550,7 @@ class App(tk.Tk):
             return 0
         if d in weather_rows:
             morning, afternoon = weather_rows[d]
-            rain_deduct = (0.5 if morning > 0 else 0) + (0.5 if afternoon > 0 else 0)
+            rain_deduct = (1.0 if morning > 0 else 0) + (0.5 if afternoon > 0 else 0)
             return max(0, base - rain_deduct)
         return base
 
