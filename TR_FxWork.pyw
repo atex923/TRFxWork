@@ -633,7 +633,7 @@ class EditableTree(ttk.Frame):
 
         for col, head, width in zip(columns, headings, widths):
             self.tree.heading(col, text=head, command=lambda c=col: self.sort_by_column(c))
-            fixed_cols = {"exclude", "day", "name", "note"}
+            fixed_cols = {"exclude", "day", "name", "note", "morning", "afternoon", "typhoon", "site"}
             self.tree.column(col, width=width, minwidth=width, anchor="center", stretch=False if col in fixed_cols else True)
 
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -1629,7 +1629,7 @@ class App(tk.Tk):
             self.tab_weather,
             ["day", "morning", "afternoon", "typhoon", "site", "note"],
             ["日期", "上午", "下午", "天氣", "場地", "備註"],
-            [130, 80, 80, 80, 80, 300],
+            [130, 130, 130, 130, 130, 130],
             self.mark_dirty,
             add_command=self.open_weather_calendar_dialog
         )
@@ -1923,8 +1923,17 @@ class App(tk.Tk):
         ttk.Button(top, text="上個月", command=lambda: self.shift_month(-1)).pack(side="left", padx=4)
         ttk.Button(top, text="下個月", command=lambda: self.shift_month(1)).pack(side="left", padx=4)
 
-        self.cal_canvas = tk.Canvas(self.tab_calendar, background="white")
-        self.cal_canvas.pack(fill="both", expand=True, pady=8)
+        cal_area = ttk.Frame(self.tab_calendar)
+        cal_area.pack(fill="both", expand=True, pady=8)
+        self.cal_canvas = tk.Canvas(cal_area, background="white")
+        cal_vs = ttk.Scrollbar(cal_area, orient="vertical", command=self.cal_canvas.yview)
+        cal_hs = ttk.Scrollbar(cal_area, orient="horizontal", command=self.cal_canvas.xview)
+        self.cal_canvas.configure(yscrollcommand=cal_vs.set, xscrollcommand=cal_hs.set)
+        self.cal_canvas.grid(row=0, column=0, sticky="nsew")
+        cal_vs.grid(row=0, column=1, sticky="ns")
+        cal_hs.grid(row=1, column=0, sticky="ew")
+        cal_area.grid_rowconfigure(0, weight=1)
+        cal_area.grid_columnconfigure(0, weight=1)
         self.cal_canvas.bind("<Configure>", lambda e: self.render_calendar())
         self.cal_canvas.bind("<MouseWheel>", lambda e: self.shift_month(-1 if e.delta > 0 else 1))
 
@@ -2511,7 +2520,7 @@ class App(tk.Tk):
                 days.add(d)
         return days
 
-    def collect_weather_workdays(self):
+    def collect_weather_deductions(self):
         rows = {}
         for row in self.weather_tree.get_rows():
             d = parse_date(row[0] if row else "")
@@ -2530,19 +2539,20 @@ class App(tk.Tk):
         if workday_dates is None:
             workday_dates = self.collect_workday_dates()
         if weather_rows is None:
-            weather_rows = self.collect_weather_workdays()
+            weather_rows = self.collect_weather_deductions()
 
         if d in railway_dates:
             return 0
+        base = 1 if self.day_type_var.get() == "日曆天" else (1 if d.weekday() < 5 else 0)
         if d in workday_dates:
-            return sum(weather_rows[d]) if d in weather_rows else 1
+            base = 1
         if d in holiday_dates:
             return 0
         if d in weather_rows:
-            return sum(weather_rows[d])
-        if self.day_type_var.get() == "日曆天":
-            return 1
-        return 1 if d.weekday() < 5 else 0
+            morning, afternoon = weather_rows[d]
+            rain_deduct = (0.5 if morning > 0 else 0) + (0.5 if afternoon > 0 else 0)
+            return max(0, base - rain_deduct)
+        return base
 
     def count_project_workdays_until(self, start, end):
         if not start or not end or end < start:
@@ -2550,7 +2560,7 @@ class App(tk.Tk):
         holiday_dates = self.collect_exclude_dates(False)
         railway_dates = self.collect_railway_dates()
         workday_dates = self.collect_workday_dates()
-        weather_rows = self.collect_weather_workdays()
+        weather_rows = self.collect_weather_deductions()
 
         total = 0.0
         cur = start
@@ -3067,12 +3077,12 @@ class App(tk.Tk):
                 continue
             tags = []
             try:
-                if float(r[1] or 0) == 1:
+                if float(r[1] or 0) > 0:
                     tags.append("上午雨")
             except ValueError:
                 pass
             try:
-                if float(r[2] or 0) == 0.5:
+                if float(r[2] or 0) > 0:
                     tags.append("下午雨")
             except ValueError:
                 pass
@@ -3113,10 +3123,9 @@ class App(tk.Tk):
         workdays = self.collect_workday_dates()
 
         weather = self.weather_text_map()
-        weather_rows = self.collect_weather_workdays()
+        weather_rows = self.collect_weather_deductions()
 
         width = max(c.winfo_width(), 900)
-        height = max(c.winfo_height(), 520)
         left_w = 88
         top_h = 30
         cell_w = (width - left_w - 20) / 7
@@ -3143,6 +3152,9 @@ class App(tk.Tk):
 
         cal = calendar.Calendar(firstweekday=0)
         weeks = cal.monthdatescalendar(y, m)
+        content_height = top_h + 25 + len(weeks) * week_h
+        note_y = content_height + 24
+        c.configure(scrollregion=(0, 0, width, note_y + 18))
 
         row_labels = ["假日", "疏運日", "雨天", "工作日數"]
         work_count = 0
@@ -3224,7 +3236,7 @@ class App(tk.Tk):
                 c.create_text(x0+cell_w/2, y0+row_h*4.5, text=txt, font=("Microsoft JhengHei UI", 9, "bold"))
 
         c.create_text(
-            10, height - 10,
+            10, note_y,
             text="說明：週六週日紅粉色；假日粉綠色；疏運與雨天粉棕色；資料關閉前與編輯中會自動儲存。",
             anchor="sw",
             font=("Microsoft JhengHei UI", 9)

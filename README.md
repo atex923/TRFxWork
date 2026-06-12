@@ -1,19 +1,19 @@
 # 臺鐵監造紀錄小本 / TR_FxWork
 
-版本：V0.1.n
+版本：V0.1.o
 
 ## 執行方式
 
 Windows 可直接執行：
 
 ```bat
-python TR_FxWork_V0_1_n.py
+python TR_FxWork_V0_1_o.py
 ```
 
 或雙擊：
 
 ```text
-TR_FxWork_V0_1_n.pyw
+TR_FxWork_V0_1_o.pyw
 ```
 
 ## 目前功能
