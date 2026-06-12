@@ -28,14 +28,6 @@
 - V0.1.p
 - V0.1.q
 
-## 改版同步規則
-
-- 每次產出新版 `.py` 與 `.pyw` 後，需同步複製到 Google 雲端硬碟備份資料夾。
-- 目標帳號：`atex.lin@gmail.com`
-- 目標資料夾：`/Users/atex1/Library/CloudStorage/GoogleDrive-atex.lin@gmail.com/我的雲端硬碟/12.Codex/`
-- 需複製當次新版檔名，例如 `TR_FxWork_V0_1_q.py` 與 `TR_FxWork_V0_1_q.pyw`。
-- 若沙盒限制無法寫入，需要求授權後再複製。
-
 ## 技術限制
 
 - 優先使用 Python 標準函式庫。
