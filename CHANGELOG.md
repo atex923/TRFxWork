@@ -1,4 +1,32 @@
-# CHANGELOG
+﻿# CHANGELOG
+
+## V0.1.6
+
+- 新增 exe 打包備忘，Nuitka 轉檔時使用 `assets/icon_result.ico`，且僅在明確要求時重新轉 exe。
+
+## V0.1.5
+
+- 視窗標題改為 `KAGAMI 臺鐵工程本本 V0.1.5`。
+
+## V0.1.4
+
+- 支援 Nuitka onefile 單一執行檔，exe 執行時資料庫會存放在 exe 所在資料夾。
+
+## V0.1.3
+
+- 資料庫主檔名改為 `TRFxWork_db`。
+- 開啟時優先讀取 `TRFxWork_db`；若不存在則相容讀取舊版 `TR_FxWork.db`，並複製成新檔名後續儲存。
+- 備份 ZIP 內的資料庫檔名改為 `TRFxWork_db`，匯入時仍接受舊版 `TR_FxWork.db`。
+
+## V0.1.2
+
+- 修正 `.pyw` 在部分 Windows 電腦雙擊時可能因工作目錄不同而無法啟動的問題，資料庫固定使用程式所在資料夾。
+- 新增 `run_windows_no_console.vbs`，可無命令提示字元視窗啟動最新版本。
+
+## V0.1.1
+
+- 施工日曆改為依視窗可用大小自動縮放，整月可在不同解析度螢幕完整呈現，不需捲動頁面。
+- 版號規則改為每次修改遞增第三碼。
 
 ## V0.1.q
 

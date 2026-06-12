@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-臺鐵監造紀錄小本 V0.1.1
+臺鐵監造紀錄小本 V0.1.4
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
@@ -16,14 +16,28 @@ import tempfile
 import zipfile
 import calendar
 import re
+import sys
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_TITLE = "臺鐵監造紀錄小本 V0.1.1"
-DB_FILE = "TR_FxWork.db"
+APP_TITLE = "臺鐵監造紀錄小本 V0.1.4"
+
+
+def get_app_dir():
+    exe_path = os.path.abspath(sys.argv[0] or "")
+    if exe_path.lower().endswith(".exe"):
+        return os.path.dirname(exe_path)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIR = get_app_dir()
+DB_FILE_NAME = "TRFxWork_db"
+LEGACY_DB_FILE_NAME = "TR_FxWork.db"
+DB_FILE = os.path.join(APP_DIR, DB_FILE_NAME)
+LEGACY_DB_FILE = os.path.join(APP_DIR, LEGACY_DB_FILE_NAME)
 
 WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
 PASSWORD_SALT = "1981"
@@ -221,6 +235,14 @@ def count_work_days_until(start, end, exclude_dates):
             count += 1
         cur += timedelta(days=1)
     return count
+
+
+def resolve_database_path():
+    if os.path.exists(DB_FILE):
+        return DB_FILE
+    if os.path.exists(LEGACY_DB_FILE):
+        shutil.copy2(LEGACY_DB_FILE, DB_FILE)
+    return DB_FILE
 
 
 class DB:
@@ -794,7 +816,7 @@ class App(tk.Tk):
         self.minsize(1100, 720)
         self.resizable(True, True)
 
-        self.db = DB(DB_FILE)
+        self.db = DB(resolve_database_path())
         self.current_project_id = None
         self.loading = False
         self.dirty = False
@@ -2783,7 +2805,7 @@ class App(tk.Tk):
             with sqlite3.connect(DB_FILE) as src, sqlite3.connect(tmp_db) as dst:
                 src.backup(dst)
             with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(tmp_db, arcname="TR_FxWork.db")
+                zf.write(tmp_db, arcname=DB_FILE_NAME)
                 zf.writestr("README_備份說明.txt", f"臺鐵監造紀錄小本資料庫備份\n備份時間：{timestamp}\n")
             messagebox.showinfo("備份完成", f"已完成備份：\n{out_path}")
         except Exception as exc:
@@ -2807,7 +2829,7 @@ class App(tk.Tk):
             with sqlite3.connect(DB_FILE) as src, sqlite3.connect(tmp_db) as dst:
                 src.backup(dst)
             with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(tmp_db, arcname="TR_FxWork.db")
+                zf.write(tmp_db, arcname=DB_FILE_NAME)
                 zf.writestr("README_異地備份說明.txt", f"TR_FxWork 異地備份\n備份時間：{timestamp}\n")
             messagebox.showinfo("異地備份完成", f"已完成異地備份：\n{out_path}")
         except Exception as exc:
@@ -3047,9 +3069,16 @@ class App(tk.Tk):
             if path.lower().endswith(".zip"):
                 temp_dir = tempfile.mkdtemp(prefix="TR_FxWork_import_")
                 with zipfile.ZipFile(path, "r") as zf:
-                    db_names = [n for n in zf.namelist() if n.lower().endswith(".db")]
+                    names = zf.namelist()
+                    compatible_names = []
+                    for target_name in (DB_FILE_NAME, LEGACY_DB_FILE_NAME):
+                        compatible_names.extend(
+                            n for n in names
+                            if os.path.basename(n) == target_name
+                        )
+                    db_names = compatible_names or [n for n in names if n.lower().endswith(".db")]
                     if not db_names:
-                        raise RuntimeError("ZIP 內找不到 .db 資料庫檔")
+                        raise RuntimeError("ZIP 內找不到 TRFxWork_db 或舊版 .db 資料庫檔")
                     zf.extract(db_names[0], temp_dir)
                     db_path = os.path.join(temp_dir, db_names[0])
 

@@ -1,27 +1,32 @@
-# 臺鐵監造紀錄小本 / TR_FxWork
+﻿# 臺鐵監造紀錄小本 / TR_FxWork
 
-版本：V0.1.q
+版本：V0.1.6
 
 ## 執行方式
 
 Windows 可直接執行：
 
 ```bat
-python TR_FxWork_V0_1_q.py
+python TR_FxWork_V0_1_6.py
 ```
 
 或雙擊：
 
 ```text
-TR_FxWork_V0_1_q.pyw
+TR_FxWork_V0_1_6.pyw
 ```
+
+## 打包備忘
+
+Nuitka 轉 exe 時才重新打包，平常修改程式不需要每次重編。
+圖示檔放在 `assets/icon_result.ico`；打包指令與注意事項見 `BUILD_NOTES.md`。
 
 ## 目前功能
 
 - 多工程資料管理
 - 開啟時自動載入最後編輯工程
 - 關閉前自動儲存，編輯中也會定時自動儲存
-- SQLite 本機資料庫：`TR_FxWork.db`
+- SQLite 本機資料庫：`TRFxWork_db`；舊版 `TR_FxWork.db` 仍可讀取，首次讀取後會改用 `TRFxWork_db` 儲存。
 - 工程基本資料
 - 假期表
 - 晴雨表
@@ -90,7 +95,7 @@ TR_FxWork_V0_1_q.pyw
 
 ## 備份規則
 
-備份功能會將目前 `TR_FxWork.db` 打包成 ZIP。
+備份功能會將目前 `TRFxWork_db` 打包成 ZIP。
 
 檔名格式：
 

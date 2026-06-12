@@ -1,6 +1,6 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
-臺鐵監造紀錄小本 V0.1.m
+KAGAMI 臺鐵工程本本 V0.1.6
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
@@ -16,14 +16,28 @@ import tempfile
 import zipfile
 import calendar
 import re
+import sys
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_TITLE = "臺鐵監造紀錄小本 V0.1.m"
-DB_FILE = "TR_FxWork.db"
+APP_TITLE = "KAGAMI 臺鐵工程本本 V0.1.6"
+
+
+def get_app_dir():
+    exe_path = os.path.abspath(sys.argv[0] or "")
+    if exe_path.lower().endswith(".exe"):
+        return os.path.dirname(exe_path)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+APP_DIR = get_app_dir()
+DB_FILE_NAME = "TRFxWork_db"
+LEGACY_DB_FILE_NAME = "TR_FxWork.db"
+DB_FILE = os.path.join(APP_DIR, DB_FILE_NAME)
+LEGACY_DB_FILE = os.path.join(APP_DIR, LEGACY_DB_FILE_NAME)
 
 WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
 PASSWORD_SALT = "1981"
@@ -221,6 +235,14 @@ def count_work_days_until(start, end, exclude_dates):
             count += 1
         cur += timedelta(days=1)
     return count
+
+
+def resolve_database_path():
+    if os.path.exists(DB_FILE):
+        return DB_FILE
+    if os.path.exists(LEGACY_DB_FILE):
+        shutil.copy2(LEGACY_DB_FILE, DB_FILE)
+    return DB_FILE
 
 
 class DB:
@@ -794,7 +816,7 @@ class App(tk.Tk):
         self.minsize(1100, 720)
         self.resizable(True, True)
 
-        self.db = DB(DB_FILE)
+        self.db = DB(resolve_database_path())
         self.current_project_id = None
         self.loading = False
         self.dirty = False
@@ -1970,12 +1992,7 @@ class App(tk.Tk):
         cal_area = ttk.Frame(self.tab_calendar)
         cal_area.pack(fill="both", expand=True, pady=8)
         self.cal_canvas = tk.Canvas(cal_area, background="white")
-        cal_vs = ttk.Scrollbar(cal_area, orient="vertical", command=self.cal_canvas.yview)
-        cal_hs = ttk.Scrollbar(cal_area, orient="horizontal", command=self.cal_canvas.xview)
-        self.cal_canvas.configure(yscrollcommand=cal_vs.set, xscrollcommand=cal_hs.set)
         self.cal_canvas.grid(row=0, column=0, sticky="nsew")
-        cal_vs.grid(row=0, column=1, sticky="ns")
-        cal_hs.grid(row=1, column=0, sticky="ew")
         cal_area.grid_rowconfigure(0, weight=1)
         cal_area.grid_columnconfigure(0, weight=1)
         self.cal_canvas.bind("<Configure>", lambda e: self.render_calendar())
@@ -2788,7 +2805,7 @@ class App(tk.Tk):
             with sqlite3.connect(DB_FILE) as src, sqlite3.connect(tmp_db) as dst:
                 src.backup(dst)
             with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(tmp_db, arcname="TR_FxWork.db")
+                zf.write(tmp_db, arcname=DB_FILE_NAME)
                 zf.writestr("README_備份說明.txt", f"臺鐵監造紀錄小本資料庫備份\n備份時間：{timestamp}\n")
             messagebox.showinfo("備份完成", f"已完成備份：\n{out_path}")
         except Exception as exc:
@@ -2812,7 +2829,7 @@ class App(tk.Tk):
             with sqlite3.connect(DB_FILE) as src, sqlite3.connect(tmp_db) as dst:
                 src.backup(dst)
             with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(tmp_db, arcname="TR_FxWork.db")
+                zf.write(tmp_db, arcname=DB_FILE_NAME)
                 zf.writestr("README_異地備份說明.txt", f"TR_FxWork 異地備份\n備份時間：{timestamp}\n")
             messagebox.showinfo("異地備份完成", f"已完成異地備份：\n{out_path}")
         except Exception as exc:
@@ -3052,9 +3069,16 @@ class App(tk.Tk):
             if path.lower().endswith(".zip"):
                 temp_dir = tempfile.mkdtemp(prefix="TR_FxWork_import_")
                 with zipfile.ZipFile(path, "r") as zf:
-                    db_names = [n for n in zf.namelist() if n.lower().endswith(".db")]
+                    names = zf.namelist()
+                    compatible_names = []
+                    for target_name in (DB_FILE_NAME, LEGACY_DB_FILE_NAME):
+                        compatible_names.extend(
+                            n for n in names
+                            if os.path.basename(n) == target_name
+                        )
+                    db_names = compatible_names or [n for n in names if n.lower().endswith(".db")]
                     if not db_names:
-                        raise RuntimeError("ZIP 內找不到 .db 資料庫檔")
+                        raise RuntimeError("ZIP 內找不到 TRFxWork_db 或舊版 .db 資料庫檔")
                     zf.extract(db_names[0], temp_dir)
                     db_path = os.path.join(temp_dir, db_names[0])
 
@@ -3172,12 +3196,16 @@ class App(tk.Tk):
         weather = self.weather_text_map()
         weather_rows = self.collect_weather_deductions()
 
-        width = max(c.winfo_width(), 900)
-        left_w = 88
-        top_h = 30
-        cell_w = (width - left_w - 20) / 7
-        week_h = 115
-        row_h = 23
+        canvas_w = c.winfo_width()
+        canvas_h = c.winfo_height()
+        width = canvas_w if canvas_w > 1 else 900
+        height = canvas_h if canvas_h > 1 else 430
+        left_w = max(58, min(88, int(width * 0.09)))
+        right_pad = 8
+        top_h = 28
+        weekday_h = 22
+        note_h = 22
+        cell_w = max(50, (width - left_w - right_pad) / 7)
 
         colors = {
             "normal_date": "#fff2cc",      # 粉黃色
@@ -3190,18 +3218,25 @@ class App(tk.Tk):
             "header": "#ddebf7",
         }
 
-        c.create_text(width/2, 15, text=f"{y} 年 {m:02d} 月 施工日曆", font=("Microsoft JhengHei UI", 14, "bold"))
+        cal = calendar.Calendar(firstweekday=0)
+        weeks = cal.monthdatescalendar(y, m)
+        available_h = max(150, height - top_h - weekday_h - note_h - 6)
+        week_h = available_h / max(1, len(weeks))
+        row_h = week_h / 5
+        main_font_size = max(7, min(9, int(row_h * 0.44)))
+        label_font_size = max(7, min(9, int(row_h * 0.42)))
+        title_font_size = max(11, min(14, int(top_h * 0.48)))
+        note_font_size = max(7, min(9, int(note_h * 0.42)))
+        content_height = top_h + weekday_h + len(weeks) * week_h
+        note_y = content_height + 24
+        c.configure(scrollregion=(0, 0, width, height))
+
+        c.create_text(width/2, 15, text=f"{y} 年 {m:02d} 月 施工日曆", font=("Microsoft JhengHei UI", title_font_size, "bold"))
 
         for i, wd in enumerate(WEEKDAY_NAMES):
             x0 = left_w + i * cell_w
-            c.create_rectangle(x0, top_h, x0 + cell_w, top_h + 25, fill=colors["header"], outline=colors["grid"])
-            c.create_text(x0 + cell_w/2, top_h + 12, text=f"星期{wd}", font=("Microsoft JhengHei UI", 10, "bold"))
-
-        cal = calendar.Calendar(firstweekday=0)
-        weeks = cal.monthdatescalendar(y, m)
-        content_height = top_h + 25 + len(weeks) * week_h
-        note_y = content_height + 24
-        c.configure(scrollregion=(0, 0, width, note_y + 18))
+            c.create_rectangle(x0, top_h, x0 + cell_w, top_h + weekday_h, fill=colors["header"], outline=colors["grid"])
+            c.create_text(x0 + cell_w/2, top_h + weekday_h/2, text=f"星期{wd}", font=("Microsoft JhengHei UI", main_font_size, "bold"))
 
         row_labels = ["假日", "疏運日", "雨天", "工作日數"]
         work_count = 0
@@ -3225,10 +3260,10 @@ class App(tk.Tk):
                 cur += timedelta(days=1)
 
         for wi, week in enumerate(weeks):
-            y0 = top_h + 25 + wi * week_h
+            y0 = top_h + weekday_h + wi * week_h
             for ri, label in enumerate(row_labels):
                 c.create_rectangle(5, y0 + ri*row_h, left_w, y0 + (ri+1)*row_h, fill="#f2f2f2", outline=colors["grid"])
-                c.create_text(left_w - 8, y0 + ri*row_h + row_h/2, text=label, anchor="e", font=("Microsoft JhengHei UI", 9))
+                c.create_text(left_w - 6, y0 + ri*row_h + row_h/2, text=label, anchor="e", font=("Microsoft JhengHei UI", label_font_size))
 
             for di, d in enumerate(week):
                 x0 = left_w + di * cell_w
@@ -3240,12 +3275,11 @@ class App(tk.Tk):
                 # 第1行：日期
                 c.create_rectangle(x0, y0, x0+cell_w, y0+row_h, fill=alpha_fill, outline=colors["grid"])
                 date_fill = "red" if in_month and d == date.today() else "black"
-                date_font = ("Microsoft JhengHei UI", 9, "bold") if in_month and d == date.today() else ("Microsoft JhengHei UI", 9, "bold")
                 c.create_text(
                     x0+cell_w-5, y0+row_h/2,
                     text=d.strftime("%m/%d") if in_month else "",
                     anchor="e",
-                    font=date_font,
+                    font=("Microsoft JhengHei UI", main_font_size, "bold"),
                     fill=date_fill
                 )
 
@@ -3253,19 +3287,19 @@ class App(tk.Tk):
                 htxt = holidays.get(d, "") if in_month else ""
                 fill = colors["holiday"] if htxt else colors["white"]
                 c.create_rectangle(x0, y0+row_h, x0+cell_w, y0+2*row_h, fill=fill, outline=colors["grid"])
-                c.create_text(x0+cell_w/2, y0+row_h*1.5, text=htxt, font=("Microsoft JhengHei UI", 9))
+                c.create_text(x0+cell_w/2, y0+row_h*1.5, text=htxt, font=("Microsoft JhengHei UI", main_font_size))
 
                 # 第3行：疏運
                 rtxt = "疏運" if in_month and d in railway else ""
                 fill = colors["transport"] if rtxt else colors["white"]
                 c.create_rectangle(x0, y0+2*row_h, x0+cell_w, y0+3*row_h, fill=fill, outline=colors["grid"])
-                c.create_text(x0+cell_w/2, y0+row_h*2.5, text=rtxt, font=("Microsoft JhengHei UI", 9))
+                c.create_text(x0+cell_w/2, y0+row_h*2.5, text=rtxt, font=("Microsoft JhengHei UI", main_font_size))
 
                 # 第4行：雨天
                 wtxt = weather.get(d, "") if in_month else ""
                 fill = colors["weather"] if wtxt else colors["white"]
                 c.create_rectangle(x0, y0+3*row_h, x0+cell_w, y0+4*row_h, fill=fill, outline=colors["grid"])
-                c.create_text(x0+cell_w/2, y0+row_h*3.5, text=wtxt, font=("Microsoft JhengHei UI", 9))
+                c.create_text(x0+cell_w/2, y0+row_h*3.5, text=wtxt, font=("Microsoft JhengHei UI", main_font_size))
 
                 # 第5個視覺區塊：工作日數累計
                 in_contract_period = (
@@ -3280,13 +3314,13 @@ class App(tk.Tk):
                 else:
                     txt = ""
                 c.create_rectangle(x0, y0+4*row_h, x0+cell_w, y0+5*row_h, fill="#ffffff", outline=colors["grid"])
-                c.create_text(x0+cell_w/2, y0+row_h*4.5, text=txt, font=("Microsoft JhengHei UI", 9, "bold"))
+                c.create_text(x0+cell_w/2, y0+row_h*4.5, text=txt, font=("Microsoft JhengHei UI", main_font_size, "bold"))
 
         c.create_text(
             10, note_y,
             text="說明：週六週日紅粉色；假日粉綠色；疏運與雨天粉棕色；資料關閉前與編輯中會自動儲存。",
             anchor="sw",
-            font=("Microsoft JhengHei UI", 9)
+            font=("Microsoft JhengHei UI", note_font_size)
         )
 
 

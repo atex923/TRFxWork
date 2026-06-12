@@ -1,5 +1,9 @@
 __pycache__/
 *.py[cod]
+
+# Local databases and backups may contain personal/project data.
+TRFxWork_db
+TR_FxWork.db
 *.db
 *.sqlite
 *.sqlite3

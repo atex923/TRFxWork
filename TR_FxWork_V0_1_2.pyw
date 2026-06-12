@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-臺鐵監造紀錄小本 V0.1.1
+臺鐵監造紀錄小本 V0.1.2
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
@@ -22,8 +22,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_TITLE = "臺鐵監造紀錄小本 V0.1.1"
-DB_FILE = "TR_FxWork.db"
+APP_TITLE = "臺鐵監造紀錄小本 V0.1.2"
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(APP_DIR, "TR_FxWork.db")
 
 WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
 PASSWORD_SALT = "1981"
