@@ -715,8 +715,36 @@ class EditableTree(ttk.Frame):
             e.insert(0, old[i] if i < len(old) else "")
             entries.append(e)
 
+        weather_edit = "morning" in self.columns and "afternoon" in self.columns
+        if weather_edit:
+            morning_index = self.columns.index("morning")
+            afternoon_index = self.columns.index("afternoon")
+
+            def morning_is_full_day():
+                try:
+                    return float(entries[morning_index].get().strip() or 0) >= 1.0
+                except ValueError:
+                    return False
+
+            def update_afternoon_state(event=None):
+                if morning_is_full_day():
+                    entries[afternoon_index].delete(0, "end")
+                    entries[afternoon_index].configure(state="disabled")
+                else:
+                    entries[afternoon_index].configure(state="normal")
+
+            entries[morning_index].bind("<KeyRelease>", update_afternoon_state)
+            entries[morning_index].bind("<FocusOut>", update_afternoon_state)
+            update_afternoon_state()
+
         def ok():
             vals = [e.get().strip() for e in entries]
+            if weather_edit:
+                try:
+                    if float(vals[morning_index] or 0) >= 1.0:
+                        vals[afternoon_index] = ""
+                except ValueError:
+                    pass
             self.tree.item(item, values=vals)
             win.destroy()
             self.changed()
@@ -1707,6 +1735,22 @@ class App(tk.Tk):
             entries.append(ent)
         form.grid_columnconfigure(1, weight=1)
 
+        def morning_is_full_day():
+            try:
+                return float(morning_var.get().strip() or 0) >= 1.0
+            except ValueError:
+                return False
+
+        def update_afternoon_state(*args):
+            if morning_is_full_day():
+                afternoon_var.set("")
+                entries[1].configure(state="disabled")
+            else:
+                entries[1].configure(state="normal")
+
+        morning_var.trace_add("write", update_afternoon_state)
+        update_afternoon_state()
+
         def select_day(day):
             selected_day_var.set(day.strftime("%Y-%m-%d"))
             entries[0].focus_set()
@@ -1743,7 +1787,7 @@ class App(tk.Tk):
             values = [
                 day_text,
                 morning_var.get().strip(),
-                afternoon_var.get().strip(),
+                "" if morning_is_full_day() else afternoon_var.get().strip(),
                 typhoon_var.get().strip(),
                 site_var.get().strip(),
                 note_var.get().strip(),
@@ -2550,7 +2594,10 @@ class App(tk.Tk):
             return 0
         if d in weather_rows:
             morning, afternoon = weather_rows[d]
-            rain_deduct = (1.0 if morning > 0 else 0) + (0.5 if afternoon > 0 else 0)
+            if morning >= 1.0:
+                rain_deduct = 1.0
+            else:
+                rain_deduct = (1.0 if morning > 0 else 0) + (0.5 if afternoon > 0 else 0)
             return max(0, base - rain_deduct)
         return base
 
