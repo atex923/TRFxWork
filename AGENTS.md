@@ -4,7 +4,7 @@
 
 - 中文：臺鐵監造紀錄小本
 - 英文：TR_FxWork
-- 目前版本：V0.1.d
+- 目前版本：V0.1.q
 
 ## 版號規則
 
@@ -14,6 +14,27 @@
 - V0.1.b
 - V0.1.c
 - V0.1.d
+- V0.1.e
+- V0.1.f
+- V0.1.g
+- V0.1.h
+- V0.1.i
+- V0.1.j
+- V0.1.k
+- V0.1.l
+- V0.1.m
+- V0.1.n
+- V0.1.o
+- V0.1.p
+- V0.1.q
+
+## 改版同步規則
+
+- 每次產出新版 `.py` 與 `.pyw` 後，需同步複製到 Google 雲端硬碟備份資料夾。
+- 目標帳號：`atex.lin@gmail.com`
+- 目標資料夾：`/Users/atex1/Library/CloudStorage/GoogleDrive-atex.lin@gmail.com/我的雲端硬碟/12.Codex/`
+- 需複製當次新版檔名，例如 `TR_FxWork_V0_1_q.py` 與 `TR_FxWork_V0_1_q.pyw`。
+- 若沙盒限制無法寫入，需要求授權後再複製。
 
 ## 技術限制
 
