@@ -1,12 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 """
-KAGAMI 臺鐵工程本本 V0.1.7
+KAGAMI 臺鐵工程本本 V0.1.8
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
 - 開啟時自動載入上次編輯工程
 - 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、工程執行紀錄表
-- V0.1.7：新增歷史區規則，工作區只保留最新版號檔案。
+- V0.1.8：改版時用 Git tag 保存舊版，主頁維持最新版。
 """
 
 import os
@@ -24,8 +24,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_VERSION = "V0.1.7"
-APP_RELEASE_SUMMARY = "新增歷史區規則，工作區只保留最新版號檔案。"
+APP_VERSION = "V0.1.8"
+APP_RELEASE_SUMMARY = "改版時用 Git tag 保存舊版，主頁維持最新版。"
 APP_TITLE = f"KAGAMI 臺鐵工程本本 {APP_VERSION}"
 
 
