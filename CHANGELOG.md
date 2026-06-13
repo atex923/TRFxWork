@@ -1,5 +1,11 @@
 ﻿# CHANGELOG
 
+## V0.1.7
+
+- 新增 HISTORY.md 歷史區。
+- 主程式新增 APP_VERSION 與 APP_RELEASE_SUMMARY。
+- 工作區改為只保留最新版號程式檔，舊版由 Git 歷史保存。
+
 ## V0.1.6
 
 - 新增 exe 打包備忘，Nuitka 轉檔時使用 `assets/icon_result.ico`，且僅在明確要求時重新轉 exe。

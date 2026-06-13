@@ -1,5 +1,5 @@
 ﻿@echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-python TR_FxWork_V0_1_6.py
+python TR_FxWork_V0_1_7.py
 pause
