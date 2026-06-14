@@ -1,12 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 """
-KAGAMI 臺鐵工程本本 V0.1.8
+KAGAMI 臺鐵工程本本 V0.1.9
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
 - 開啟時自動載入上次編輯工程
 - 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、工程執行紀錄表
-- V0.1.8：改版時用 Git tag 保存舊版，主頁維持最新版。
+- V0.1.9：調整第一分頁工程辦理情形、工程費與招標情形版面。
 """
 
 import os
@@ -24,8 +24,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_VERSION = "V0.1.8"
-APP_RELEASE_SUMMARY = "改版時用 Git tag 保存舊版，主頁維持最新版。"
+APP_VERSION = "V0.1.9"
+APP_RELEASE_SUMMARY = "調整第一分頁工程辦理情形、工程費與招標情形版面。"
 APP_TITLE = f"KAGAMI 臺鐵工程本本 {APP_VERSION}"
 
 
@@ -52,6 +52,21 @@ PROJECT_EXTRA_FIELDS = [
     "contract_budget_total", "contract_award_total",
     "labor_budget", "labor_award", "deposit_difference", "deposit_performance", "deposit_total",
     "final_contract_amount", "warranty_rate", "warranty_deposit",
+    "planned_precheck_date", "actual_precheck_date", "planned_acceptance_date", "actual_acceptance_date",
+    "settlement_date", "warranty_years", "warranty_end_date", "warranty_note", "performance_bond_rate",
+    "budget_total_amount", "budget_unfinished_amount", "budget_input_tax",
+    "budget_contract_amount", "budget_contract_tax", "budget_contract_total",
+    "budget_labor",
+    "budget_mgmt_fee", "budget_self_labor", "budget_self_material", "budget_spare_material",
+    "budget_railway_material", "budget_supervision_fee", "budget_freight", "budget_air_pollution_fee",
+    "budget_other",
+    "award_total_amount", "award_unfinished_amount", "award_input_tax",
+    "award_contract_amount", "award_contract_tax", "award_contract_total", "award_base_price",
+    "award_contract_budget_ratio", "award_contract_base_ratio", "award_base_budget_ratio",
+    "award_labor",
+    "award_mgmt_fee", "award_self_labor", "award_self_material", "award_spare_material",
+    "award_railway_material", "award_supervision_fee", "award_freight", "award_air_pollution_fee",
+    "award_other",
 ]
 
 MONEY_FIELDS = {
@@ -59,6 +74,16 @@ MONEY_FIELDS = {
     "contract_budget_total", "contract_award_total",
     "labor_budget", "labor_award", "deposit_difference", "deposit_performance", "deposit_total",
     "final_contract_amount", "warranty_deposit",
+    "budget_total_amount", "budget_unfinished_amount", "budget_input_tax",
+    "budget_contract_amount", "budget_contract_tax", "budget_contract_total", "budget_labor",
+    "budget_mgmt_fee", "budget_self_labor", "budget_self_material", "budget_spare_material",
+    "budget_railway_material", "budget_supervision_fee", "budget_freight", "budget_air_pollution_fee",
+    "budget_other",
+    "award_total_amount", "award_unfinished_amount", "award_input_tax",
+    "award_contract_amount", "award_contract_tax", "award_contract_total", "award_base_price",
+    "award_labor", "award_mgmt_fee", "award_self_labor", "award_self_material", "award_spare_material",
+    "award_railway_material", "award_supervision_fee", "award_freight", "award_air_pollution_fee",
+    "award_other",
 }
 
 
@@ -211,6 +236,16 @@ def add_calendar_days(start, days):
     return start + timedelta(days=int(days) - 1)
 
 
+def add_years(d, years):
+    if not d:
+        return None
+    years = int(float(years or 0))
+    try:
+        return d.replace(year=d.year + years)
+    except ValueError:
+        return d.replace(month=2, day=28, year=d.year + years)
+
+
 def add_work_days(start, days, exclude_dates):
     """從開工日當天開始累計第 1 工作日；週六週日與 exclude_dates 不計。"""
     if not start or not days:
@@ -286,7 +321,8 @@ class DB:
             project_id INTEGER,
             round_no INTEGER,
             online_date TEXT,
-            open_date TEXT
+            open_date TEXT,
+            award_date TEXT DEFAULT ''
         )
         """)
         c.execute("""
@@ -425,6 +461,10 @@ class DB:
                 c.execute(f"ALTER TABLE projects ADD COLUMN {field} TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
+        try:
+            c.execute("ALTER TABLE bids ADD COLUMN award_date TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         self.conn.commit()
 
     def get_setting(self, key, default=""):
@@ -511,7 +551,7 @@ class DB:
         return self.conn.execute(f"SELECT * FROM {table} WHERE project_id=? ORDER BY day, id", (pid,)).fetchall()
 
     def bids(self, pid):
-        return self.conn.execute("SELECT * FROM bids WHERE project_id=? ORDER BY round_no, id", (pid,)).fetchall()
+        return self.conn.execute("SELECT * FROM bids WHERE project_id=? ORDER BY CAST(round_no AS INTEGER) DESC, id DESC", (pid,)).fetchall()
 
     def shared_holidays(self, pid):
         return self.conn.execute("""
@@ -561,8 +601,8 @@ class DB:
         if table == "bids":
             for r in rows:
                 self.conn.execute(
-                    "INSERT INTO bids(project_id, round_no, online_date, open_date) VALUES(?,?,?,?)",
-                    (pid, r.get("round_no", 1), r.get("online_date", ""), r.get("open_date", ""))
+                    "INSERT INTO bids(project_id, round_no, online_date, open_date, award_date) VALUES(?,?,?,?,?)",
+                    (pid, r.get("round_no", 1), r.get("online_date", ""), r.get("open_date", ""), r.get("award_date", ""))
                 )
         elif table == "holidays":
             self.conn.execute("DELETE FROM holidays")
@@ -658,7 +698,10 @@ class EditableTree(ttk.Frame):
 
         for col, head, width in zip(columns, headings, widths):
             self.tree.heading(col, text=head, command=lambda c=col: self.sort_by_column(c))
-            fixed_cols = {"exclude", "day", "name", "note", "morning", "afternoon", "typhoon", "site"}
+            fixed_cols = {
+                "exclude", "day", "name", "note", "morning", "afternoon", "typhoon", "site",
+                "awarded", "round_no", "online_date", "open_date", "award_date"
+            }
             self.tree.column(col, width=width, minwidth=width, anchor="center", stretch=False if col in fixed_cols else True)
 
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -831,6 +874,7 @@ class App(tk.Tk):
         self.restoring = False
         self.recalculating = False
         self.save_after_id = None
+        self.readonly_basic_keys = set()
 
         self.style = ttk.Style()
         self.style.configure("Top.TLabelframe.Label", font=("Microsoft JhengHei UI", 11, "bold"))
@@ -869,7 +913,7 @@ class App(tk.Tk):
         ttk.Label(top_select, textvariable=self.status_var).pack(side="right")
         self.function_panel = None
 
-        self.summary = ttk.LabelFrame(self, text="工程基本資料顯示區", padding=8, style="Top.TLabelframe")
+        self.summary = ttk.LabelFrame(self, text="工程辦理情形摘要", padding=8, style="Top.TLabelframe")
         self.summary.pack(fill="x", padx=8, pady=(0, 8))
         self.summary_vars = {}
         labels = [
@@ -976,6 +1020,8 @@ class App(tk.Tk):
             state["basic"] = {k: v.get() for k, v in self.basic_vars.items()}
         if hasattr(self, "project_description_text"):
             state["basic"]["project_description"] = self.project_description_text.get("1.0", "end-1c")
+        if hasattr(self, "warranty_note_text"):
+            state["basic"]["warranty_note"] = self.warranty_note_text.get("1.0", "end-1c")
         for name in [
             "bid_tree", "holiday_tree", "workday_tree", "weather_tree", "railway_tree",
             "payment_contract_tree", "payment_other_tree", "payment_admin_tree",
@@ -996,6 +1042,9 @@ class App(tk.Tk):
             if hasattr(self, "project_description_text"):
                 self.project_description_text.delete("1.0", "end")
                 self.project_description_text.insert("1.0", state.get("basic", {}).get("project_description", ""))
+            if hasattr(self, "warranty_note_text"):
+                self.warranty_note_text.delete("1.0", "end")
+                self.warranty_note_text.insert("1.0", state.get("basic", {}).get("warranty_note", ""))
             if hasattr(self, "day_type_var"):
                 self.day_type_var.set(state.get("day_type", "工作日") or "工作日")
             if hasattr(self, "execution_status_var"):
@@ -1175,9 +1224,17 @@ class App(tk.Tk):
             ent.grid(row=row, column=col+1, sticky="ew", padx=3, pady=2)
         self.edit_widgets.append(ent)
         self.basic_vars[key] = var
+        if hasattr(self, "basic_widgets"):
+            self.basic_widgets[key] = ent
         if key in MONEY_FIELDS:
             ent.bind("<FocusOut>", lambda e, k=key: self.format_money_field(k))
             ent.bind("<Return>", lambda e, k=key: self.format_money_field(k))
+        return ent
+
+    def readonly_entry(self, parent, row, col, label, key, width=14):
+        ent = self.entry(parent, row, col, label, key, width)
+        ent.configure(state="readonly")
+        self.readonly_basic_keys.add(key)
         return ent
 
     def section_title(self, parent, text, row, columnspan=8):
@@ -1196,8 +1253,108 @@ class App(tk.Tk):
         setattr(self, key + "_text", txt)
         return txt
 
+    def money_section_title(self, parent, text, row, columnspan=4):
+        bg = parent.cget("bg") if hasattr(parent, "cget") else None
+        tk.Label(parent, text=text, anchor="center", bg=bg, font=("Microsoft JhengHei UI", 11, "bold")).grid(
+            row=row, column=0, columnspan=columnspan, sticky="ew", padx=4, pady=(8, 4)
+        )
+
+    def money_entry(self, parent, row, col, label, key, width=12, readonly=False):
+        bg = parent.cget("bg") if hasattr(parent, "cget") else None
+        tk.Label(parent, text=label, anchor="e", bg=bg).grid(row=row, column=col, sticky="e", padx=3, pady=2)
+        var = tk.StringVar()
+        var.trace_add("write", self.mark_dirty)
+        ent = ttk.Entry(parent, textvariable=var, width=width)
+        ent.grid(row=row, column=col + 1, sticky="ew", padx=3, pady=2)
+        if readonly:
+            ent.configure(state="readonly")
+        self.edit_widgets.append(ent)
+        self.basic_vars[key] = var
+        if hasattr(self, "basic_widgets"):
+            self.basic_widgets[key] = ent
+        if readonly:
+            self.readonly_basic_keys.add(key)
+        if key in MONEY_FIELDS:
+            ent.bind("<FocusOut>", lambda e, k=key: self.format_money_field(k))
+            ent.bind("<Return>", lambda e, k=key: self.format_money_field(k))
+        return ent
+
+    def copy_budget_value(self, source_key, target_key):
+        if source_key in self.basic_vars and target_key in self.basic_vars:
+            self.basic_vars[target_key].set(self.basic_vars[source_key].get())
+            self.format_money_field(target_key)
+            self.recalculate()
+
+    def award_money_entry(self, parent, row, col, label, key, source_key=None, width=12, readonly=False):
+        self.money_entry(parent, row, col, label, key, width, readonly)
+        if source_key:
+            ttk.Button(parent, text="複製", width=5, command=lambda s=source_key, t=key: self.copy_budget_value(s, t)).grid(
+                row=row, column=col + 2, sticky="w", padx=(0, 6), pady=2
+            )
+
+    def build_money_sections(self, parent):
+        wrap = ttk.Frame(parent)
+        wrap.grid(row=19, column=0, columnspan=8, sticky="ew", padx=3, pady=(10, 4))
+        wrap.grid_columnconfigure(0, weight=1)
+        wrap.grid_columnconfigure(1, weight=1)
+
+        budget = tk.LabelFrame(wrap, text="預算金額", bg="#fce4d6", padx=8, pady=8, font=("Microsoft JhengHei UI", 11, "bold"))
+        award = tk.LabelFrame(wrap, text="契約金額", bg="#e2f0d9", padx=8, pady=8, font=("Microsoft JhengHei UI", 11, "bold"))
+        budget.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        award.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        for frame in (budget, award):
+            for idx in range(6):
+                frame.grid_columnconfigure(idx, weight=1)
+
+        self.money_section_title(budget, "預算內容", 0)
+        self.money_entry(budget, 1, 0, "總預算", "budget_total_amount", readonly=True)
+        self.money_entry(budget, 1, 2, "未完工程", "budget_unfinished_amount")
+        self.money_entry(budget, 2, 0, "進項稅額", "budget_input_tax", readonly=True)
+        self.money_section_title(budget, "發包工程費", 3)
+        self.money_entry(budget, 4, 0, "預算金額", "budget_contract_amount")
+        self.money_entry(budget, 4, 2, "稅金", "budget_contract_tax", readonly=True)
+        self.money_entry(budget, 5, 0, "預算總計(含稅)", "budget_contract_total", readonly=True)
+        self.money_section_title(budget, "包工費", 6)
+        self.money_entry(budget, 7, 0, "預算", "budget_labor")
+        self.money_section_title(budget, "發包以外", 8)
+        self.money_entry(budget, 9, 0, "工程管理費", "budget_mgmt_fee")
+        self.money_entry(budget, 9, 2, "自辦工費", "budget_self_labor")
+        self.money_entry(budget, 10, 0, "自購材料費", "budget_self_material")
+        self.money_entry(budget, 10, 2, "路備材料費", "budget_spare_material")
+        self.money_entry(budget, 11, 0, "路購材料費", "budget_railway_material")
+        self.money_entry(budget, 11, 2, "監理費", "budget_supervision_fee")
+        self.money_entry(budget, 12, 0, "運雜費", "budget_freight")
+        self.money_entry(budget, 12, 2, "空汙費", "budget_air_pollution_fee")
+        self.money_entry(budget, 13, 0, "其他", "budget_other")
+
+        self.money_section_title(award, "決標內容", 0, columnspan=6)
+        self.award_money_entry(award, 1, 0, "總預算", "award_total_amount", "budget_total_amount", readonly=True)
+        self.award_money_entry(award, 1, 3, "未完工程", "award_unfinished_amount", "budget_unfinished_amount")
+        self.award_money_entry(award, 2, 0, "進項稅額", "award_input_tax", "budget_input_tax", readonly=True)
+        self.money_section_title(award, "發包工程費", 3, columnspan=6)
+        self.award_money_entry(award, 4, 0, "發包契約金額", "award_contract_amount", "budget_contract_amount", readonly=True)
+        self.award_money_entry(award, 4, 3, "營業稅", "award_contract_tax", "budget_contract_tax", readonly=True)
+        self.award_money_entry(award, 5, 0, "決標金額", "award_contract_total", "budget_contract_total")
+        self.award_money_entry(award, 5, 3, "底價", "award_base_price", "budget_contract_total")
+        self.money_entry(award, 6, 0, "決標/預算=", "award_contract_budget_ratio", readonly=True)
+        self.money_entry(award, 6, 2, "決標/底價=", "award_contract_base_ratio", readonly=True)
+        self.money_entry(award, 7, 0, "底價/預算=", "award_base_budget_ratio", readonly=True)
+        self.money_section_title(award, "包工費", 8, columnspan=6)
+        self.award_money_entry(award, 9, 0, "發包", "award_labor", "budget_labor")
+        self.money_section_title(award, "發包以外", 10, columnspan=6)
+        self.award_money_entry(award, 11, 0, "工程管理費", "award_mgmt_fee", "budget_mgmt_fee")
+        self.award_money_entry(award, 11, 3, "自辦工費", "award_self_labor", "budget_self_labor")
+        self.award_money_entry(award, 12, 0, "自購材料費", "award_self_material", "budget_self_material")
+        self.award_money_entry(award, 12, 3, "路備材料費", "award_spare_material", "budget_spare_material")
+        self.award_money_entry(award, 13, 0, "路購材料費", "award_railway_material", "budget_railway_material")
+        self.award_money_entry(award, 13, 3, "監理費", "award_supervision_fee", "budget_supervision_fee")
+        self.award_money_entry(award, 14, 0, "運雜費", "award_freight", "budget_freight")
+        self.award_money_entry(award, 14, 3, "空汙費", "award_air_pollution_fee", "budget_air_pollution_fee")
+        self.award_money_entry(award, 15, 0, "其他", "award_other", "budget_other")
+
     def build_basic_tab(self):
         self.basic_vars = {}
+        self.basic_widgets = {}
         canvas = tk.Canvas(self.tab_basic, highlightthickness=0)
         vs = ttk.Scrollbar(self.tab_basic, orient="vertical", command=canvas.yview)
         hs = ttk.Scrollbar(self.tab_basic, orient="horizontal", command=canvas.xview)
@@ -1232,7 +1389,7 @@ class App(tk.Tk):
         self.entry(form, 2, 2, "工程執行號", "exec_no", 14)
         self.entry(form, 2, 4, "動支請示單號", "budget_no", 14)
         self.entry(form, 2, 6, "採購契約號碼", "purchase_contract_no", 14)
-        self.entry(form, 3, 0, "決標日期", "award_date", 14, date_picker=True)
+        self.readonly_entry(form, 3, 0, "決標日期", "award_date", 14)
         self.entry(form, 3, 2, "簽約日期", "contract_date", 14, date_picker=True)
         self.entry(form, 3, 4, "預訂開工日", "planned_start", 14, date_picker=True)
         self.entry(form, 3, 6, "實際開工日", "actual_start", 14, date_picker=True)
@@ -1244,18 +1401,36 @@ class App(tk.Tk):
         self.day_type.grid(row=4, column=3, sticky="ew", padx=3, pady=2)
         self.edit_widgets.append(self.day_type)
 
-        self.entry(form, 4, 4, "預訂竣工日（例假表）", "planned_finish_holiday", 14, date_picker=True)
-        self.entry(form, 4, 6, "預訂竣工日（疏運表）", "planned_finish_transport", 14, date_picker=True)
-        self.entry(form, 5, 0, "實際竣工日", "actual_finish", 14, date_picker=True)
-        self.entry(form, 5, 2, "承攬商", "contractor", 14)
-        self.entry(form, 5, 4, "公司地址", "company_address", 14)
-        self.entry(form, 5, 6, "負責人", "responsible_person", 14)
-        self.entry(form, 6, 0, "聯絡人", "contact_person", 14)
-        self.entry(form, 6, 2, "電話", "phone", 14)
-        self.entry(form, 6, 4, "傳真電話", "fax", 14)
-        self.entry(form, 6, 6, "統一編號", "tax_id", 14)
+        self.entry(form, 5, 0, "預訂竣工日（例假表）", "planned_finish_holiday", 14, date_picker=True)
+        self.entry(form, 5, 2, "預訂竣工日（疏運表）", "planned_finish_transport", 14, date_picker=True)
+        self.entry(form, 5, 4, "實際竣工日", "actual_finish", 14, date_picker=True)
 
-        ttk.Label(form, text="工程執行狀態").grid(row=7, column=0, sticky="e", padx=3, pady=2)
+        self.entry(form, 6, 0, "預定初驗日", "planned_precheck_date", 14, date_picker=True)
+        self.entry(form, 6, 2, "實際初驗日", "actual_precheck_date", 14, date_picker=True)
+        self.entry(form, 6, 4, "預定驗收日", "planned_acceptance_date", 14, date_picker=True)
+        self.entry(form, 6, 6, "實際驗收日", "actual_acceptance_date", 14, date_picker=True)
+
+        self.entry(form, 7, 0, "決算日", "settlement_date", 14, date_picker=True)
+        self.entry(form, 7, 2, "保固年限", "warranty_years", 8)
+        self.readonly_entry(form, 7, 4, "保固結束日", "warranty_end_date", 14)
+        ttk.Label(form, text="保固備註").grid(row=7, column=6, sticky="ne", padx=3, pady=2)
+        warranty_note = tk.Text(form, height=4, width=20, wrap="word", font=("Microsoft JhengHei UI", 10))
+        warranty_note.configure(borderwidth=1, relief="solid", highlightthickness=1, highlightbackground="#888888")
+        warranty_note.grid(row=7, column=7, sticky="ew", padx=3, pady=2)
+        warranty_note.bind("<KeyRelease>", lambda e: self.mark_dirty())
+        warranty_note.bind("<FocusOut>", lambda e: self.mark_dirty())
+        self.edit_widgets.append(warranty_note)
+        self.warranty_note_text = warranty_note
+
+        self.entry(form, 8, 0, "承攬商", "contractor", 14)
+        self.entry(form, 8, 2, "公司地址", "company_address", 14)
+        self.entry(form, 8, 4, "負責人", "responsible_person", 14)
+        self.entry(form, 8, 6, "聯絡人", "contact_person", 14)
+        self.entry(form, 9, 0, "電話", "phone", 14)
+        self.entry(form, 9, 2, "傳真電話", "fax", 14)
+        self.entry(form, 9, 4, "統一編號", "tax_id", 14)
+
+        ttk.Label(form, text="工程執行狀態").grid(row=10, column=0, sticky="e", padx=3, pady=2)
         self.execution_status_var = tk.StringVar(value="規劃中")
         self.execution_status_var.trace_add("write", self.mark_dirty)
         self.execution_status_combo = ttk.Combobox(
@@ -1264,41 +1439,31 @@ class App(tk.Tk):
             values=["規劃中", "招標中", "決標完成", "開工中", "施工中", "停工中", "復工中", "竣工中", "已竣工", "驗收中", "驗收完成", "結案"],
             width=14
         )
-        self.execution_status_combo.grid(row=7, column=1, sticky="ew", padx=3, pady=2)
+        self.execution_status_combo.grid(row=10, column=1, sticky="ew", padx=3, pady=2)
         self.edit_widgets.append(self.execution_status_combo)
 
-        self.multiline_entry(form, 8, 0, "工程說明", "project_description", height=3)
+        self.multiline_entry(form, 11, 0, "工程說明", "project_description", height=3)
 
-        self.section_title(form, "發包工程費", 9)
-        self.entry(form, 10, 0, "預算(未稅)", "contract_budget_net", 12)
-        self.entry(form, 10, 2, "決標(未稅)", "contract_award_net", 12)
-        self.entry(form, 10, 4, "稅金(預算)", "contract_budget_tax", 12)
-        self.entry(form, 10, 6, "稅金(決標)", "contract_award_tax", 12)
-        self.entry(form, 11, 0, "預算(含稅)", "contract_budget_total", 12)
-        self.entry(form, 11, 2, "決標(契約金額含稅)", "contract_award_total", 12)
+        self.section_title(form, "保證金", 12)
+        self.entry(form, 13, 0, "差額保證金", "deposit_difference", 12)
+        self.readonly_entry(form, 13, 2, "履約保證金", "deposit_performance", 12)
+        self.entry(form, 13, 4, "履保金比例", "performance_bond_rate", 8)
+        self.readonly_entry(form, 13, 6, "保證金總額", "deposit_total", 12)
+        self.readonly_entry(form, 14, 0, "保固保證金", "warranty_deposit", 12)
+        self.entry(form, 14, 2, "保固金比例", "warranty_rate", 8)
 
-        self.section_title(form, "包工費", 12)
-        self.entry(form, 13, 0, "預算", "labor_budget", 12)
-        self.entry(form, 13, 2, "決標", "labor_award", 12)
-        self.entry(form, 13, 4, "差額保證金", "deposit_difference", 12)
-        self.entry(form, 13, 6, "履約保證金", "deposit_performance", 12)
-        self.entry(form, 14, 0, "保證金總額(差額+履約)", "deposit_total", 12)
-
-        self.section_title(form, "竣工發包工程費", 15)
-        self.entry(form, 16, 0, "竣工發包工程費", "final_contract_amount", 12)
-        self.entry(form, 16, 2, "保固金比例", "warranty_rate", 12)
-        self.entry(form, 16, 4, "保固保證金", "warranty_deposit", 12)
+        self.build_money_sections(form)
 
         for i in range(8):
             form.grid_columnconfigure(i, weight=1)
 
-        bid_box = ttk.LabelFrame(content, text="招標上網日 / 開標日期（可建立多次開標）", padding=8)
+        bid_box = ttk.LabelFrame(content, text="招標情形", padding=8)
         bid_box.pack(fill="both", expand=True, pady=8)
         self.bid_tree = EditableTree(
             bid_box,
-            ["round_no", "online_date", "open_date"],
-            ["第幾次", "招標上網日", "開標日期"],
-            [100, 180, 180],
+            ["awarded", "round_no", "online_date", "open_date", "award_date"],
+            ["決標", "次數", "公告上網日", "開標日", "決標日"],
+            [50, 30, 120, 120, 120],
             self.mark_dirty,
             add_command=self.open_bid_calendar_dialog
         )
@@ -1322,7 +1487,7 @@ class App(tk.Tk):
         month_var = tk.IntVar(value=base_date.month)
         selected_day_var = tk.StringVar(value="")
         round_var = tk.StringVar(value=str(len(self.bid_tree.get_rows()) + 1))
-        date_type_var = tk.StringVar(value="招標上網日")
+        date_type_var = tk.StringVar(value="公告上網日")
 
         top = ttk.Frame(win, padding=10)
         top.pack(fill="x")
@@ -1360,7 +1525,7 @@ class App(tk.Tk):
         ttk.Label(form, text="第幾次").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
         ttk.Entry(form, textvariable=round_var, width=10).grid(row=0, column=1, sticky="w", pady=4)
         ttk.Label(form, text="輸入狀況").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
-        ttk.Combobox(form, textvariable=date_type_var, values=["招標上網日", "開標日期"], state="readonly", width=16).grid(row=1, column=1, sticky="w", pady=4)
+        ttk.Combobox(form, textvariable=date_type_var, values=["公告上網日", "開標日", "決標日"], state="readonly", width=16).grid(row=1, column=1, sticky="w", pady=4)
 
         def select_day(day):
             selected_day_var.set(day.strftime("%Y-%m-%d"))
@@ -1391,11 +1556,16 @@ class App(tk.Tk):
                 messagebox.showwarning("尚未選日期", "請先在日曆表點選招標日期。", parent=win)
                 return
             round_text = round_var.get().strip() or str(len(self.bid_tree.get_rows()) + 1)
-            if date_type_var.get() == "招標上網日":
-                values = [round_text, day_text, ""]
+            values = ["", round_text, "", "", ""]
+            if date_type_var.get() == "公告上網日":
+                values[2] = day_text
+            elif date_type_var.get() == "開標日":
+                values[3] = day_text
             else:
-                values = [round_text, "", day_text]
+                values[0] = "V"
+                values[4] = day_text
             self.bid_tree.add_row_after_selection(values)
+            self.update_bid_award_state()
             selected_day_var.set("")
             self.status_var.set(f"已新增招標資訊：{date_type_var.get()} {day_text}")
 
@@ -2287,7 +2457,7 @@ class App(tk.Tk):
         self.edit_widgets.append(self.execution_status_combo)
         ttk.Label(
             box,
-            text="此欄位會即時顯示在上半部工程基本資料顯示區。後續可再擴充狀態日期、狀態說明與歷程紀錄。"
+            text="此欄位會即時顯示在上半部工程辦理情形摘要。後續可再擴充狀態日期、狀態說明與歷程紀錄。"
         ).grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=8)
         box.grid_columnconfigure(1, weight=1)
 
@@ -2325,6 +2495,14 @@ class App(tk.Tk):
                     w.configure(foreground="black" if unlocked else "#1f4e79")
             except tk.TclError:
                 pass
+        if unlocked:
+            for key in getattr(self, "readonly_basic_keys", set()):
+                widget = getattr(self, "basic_widgets", {}).get(key)
+                if widget:
+                    try:
+                        widget.configure(state="readonly")
+                    except tk.TclError:
+                        pass
         self.assign_tree_edit_guards()
         manual_var = getattr(self, "data_edit_enabled_var", None)
         if manual_var is not None and not manual_var.get():
@@ -2511,9 +2689,16 @@ class App(tk.Tk):
         if hasattr(self, "project_description_text"):
             self.project_description_text.delete("1.0", "end")
             self.project_description_text.insert("1.0", p["project_description"] if "project_description" in p.keys() and p["project_description"] is not None else "")
+        if hasattr(self, "warranty_note_text"):
+            self.warranty_note_text.delete("1.0", "end")
+            self.warranty_note_text.insert("1.0", p["warranty_note"] if "warranty_note" in p.keys() and p["warranty_note"] is not None else "")
         self.day_type_var.set(p["day_type"] or "工作日")
 
-        self.bid_tree.set_rows([[r["round_no"], r["online_date"], r["open_date"]] for r in self.db.bids(pid)])
+        bid_rows = []
+        for r in self.db.bids(pid):
+            award_day = r["award_date"] if "award_date" in r.keys() else ""
+            bid_rows.append(["V" if award_day else "", r["round_no"], r["online_date"], r["open_date"], award_day])
+        self.bid_tree.set_rows(bid_rows)
         self.holiday_tree.set_rows([["✓" if r["excluded"] else "", r["day"], r["name"]] for r in self.db.rows("holidays", pid)])
         self.workday_tree.set_rows([["✓" if r["excluded"] else "", r["day"], r["name"]] for r in self.db.rows("workdays", pid)])
         self.apply_year_separators(self.holiday_tree)
@@ -2636,11 +2821,47 @@ class App(tk.Tk):
             cur += timedelta(days=1)
         return total
 
+    def percent_text(self, numerator, denominator):
+        if not denominator:
+            return ""
+        return f"{round((numerator / denominator) * 100):.0f}%"
+
+    def set_basic_value(self, key, value):
+        if key in self.basic_vars and self.basic_vars[key].get() != value:
+            self.basic_vars[key].set(value)
+
+    def update_bid_award_state(self):
+        if not hasattr(self, "bid_tree"):
+            return
+        rows = []
+        for row in self.bid_tree.get_rows():
+            raw = list(row)
+            if len(raw) == 3:
+                vals = ["", raw[0], raw[1], raw[2], ""]
+            elif len(raw) == 4:
+                vals = ["", raw[0], raw[1], raw[2], raw[3]]
+            else:
+                vals = (raw + [""] * 5)[:5]
+            vals[0] = "V" if vals[4] else ""
+            rows.append(vals)
+
+        def sort_key(row):
+            try:
+                return int(float(row[1] or 0))
+            except ValueError:
+                return 0
+
+        rows.sort(key=sort_key, reverse=True)
+        self.bid_tree.set_rows(rows)
+        award_day = next((row[4] for row in rows if row[4]), "")
+        self.set_basic_value("award_date", award_day)
+
     def recalculate(self):
         if not self.current_project_id:
             return
         self.recalculating = True
         try:
+            self.update_bid_award_state()
             start = parse_date(self.basic_vars["actual_start"].get()) or parse_date(self.basic_vars["planned_start"].get())
             planned_start = parse_date(self.basic_vars["planned_start"].get())
             try:
@@ -2670,17 +2891,60 @@ class App(tk.Tk):
             if self.basic_vars["planned_finish_transport"].get() != finish_transport_text:
                 self.basic_vars["planned_finish_transport"].set(finish_transport_text)
 
+            if not self.basic_vars.get("performance_bond_rate", tk.StringVar()).get().strip():
+                self.basic_vars["performance_bond_rate"].set("10%")
+            if not self.basic_vars.get("warranty_rate", tk.StringVar()).get().strip():
+                self.basic_vars["warranty_rate"].set("3%")
+
+            budget_contract = self.safe_amount(self.basic_vars.get("budget_contract_amount", tk.StringVar()).get())
+            budget_tax = budget_contract * 0.05
+            budget_total = budget_contract + budget_tax
+            award_total = self.safe_amount(self.basic_vars.get("award_contract_total", tk.StringVar()).get())
+            award_net = award_total / 1.05 if award_total else 0
+            award_tax = award_total - award_net if award_total else 0
+            award_base = self.safe_amount(self.basic_vars.get("award_base_price", tk.StringVar()).get())
+            perf_rate = self.safe_amount(self.basic_vars.get("performance_bond_rate", tk.StringVar()).get()) / 100
+            warranty_rate = self.safe_amount(self.basic_vars.get("warranty_rate", tk.StringVar()).get()) / 100
+            acceptance_date = parse_date(self.basic_vars.get("actual_acceptance_date", tk.StringVar()).get())
+            warranty_years = self.safe_amount(self.basic_vars.get("warranty_years", tk.StringVar()).get())
+            warranty_end = add_years(acceptance_date, warranty_years) - timedelta(days=1) if acceptance_date and warranty_years else None
+
             auto_totals = {
-                "contract_budget_total": self.safe_amount(self.basic_vars.get("contract_budget_net", tk.StringVar()).get()) + self.safe_amount(self.basic_vars.get("contract_budget_tax", tk.StringVar()).get()),
-                "contract_award_total": self.safe_amount(self.basic_vars.get("contract_award_net", tk.StringVar()).get()) + self.safe_amount(self.basic_vars.get("contract_award_tax", tk.StringVar()).get()),
-                "deposit_total": self.safe_amount(self.basic_vars.get("deposit_difference", tk.StringVar()).get()) + self.safe_amount(self.basic_vars.get("deposit_performance", tk.StringVar()).get()),
-                "warranty_deposit": self.safe_amount(self.basic_vars.get("final_contract_amount", tk.StringVar()).get()) * (self.safe_amount(self.basic_vars.get("warranty_rate", tk.StringVar()).get()) / 100),
+                "budget_contract_tax": budget_tax,
+                "budget_contract_total": budget_total,
+                "budget_input_tax": budget_tax,
+                "budget_total_amount": self.safe_amount(self.basic_vars.get("budget_unfinished_amount", tk.StringVar()).get()) + budget_tax,
+                "award_contract_amount": award_net,
+                "award_contract_tax": award_tax,
+                "award_input_tax": award_tax,
+                "award_total_amount": self.safe_amount(self.basic_vars.get("award_unfinished_amount", tk.StringVar()).get()) + award_tax,
+                "contract_budget_net": budget_contract,
+                "contract_budget_tax": budget_tax,
+                "contract_budget_total": budget_total,
+                "contract_award_net": award_net,
+                "contract_award_tax": award_tax,
+                "contract_award_total": award_total,
+                "labor_budget": self.safe_amount(self.basic_vars.get("budget_labor", tk.StringVar()).get()),
+                "labor_award": self.safe_amount(self.basic_vars.get("award_labor", tk.StringVar()).get()),
+                "deposit_performance": award_total * perf_rate,
+                "deposit_total": self.safe_amount(self.basic_vars.get("deposit_difference", tk.StringVar()).get()) + (award_total * perf_rate),
+                "warranty_deposit": award_total * warranty_rate,
+                "final_contract_amount": award_total,
             }
             for key, value in auto_totals.items():
                 if key in self.basic_vars:
                     text = self.money_text(value) if value else ""
                     if self.basic_vars[key].get() != text:
                         self.basic_vars[key].set(text)
+
+            ratio_values = {
+                "award_contract_budget_ratio": self.percent_text(award_total, budget_total),
+                "award_contract_base_ratio": self.percent_text(award_total, award_base),
+                "award_base_budget_ratio": self.percent_text(award_base, budget_total),
+                "warranty_end_date": fmt_date(warranty_end),
+            }
+            for key, text in ratio_values.items():
+                self.set_basic_value(key, text)
 
             today = date.today()
             elapsed = (today - start).days + 1 if start and today >= start else 0
@@ -2711,6 +2975,8 @@ class App(tk.Tk):
         data = {k: v.get().strip() for k, v in self.basic_vars.items()}
         if hasattr(self, "project_description_text"):
             data["project_description"] = self.project_description_text.get("1.0", "end-1c").strip()
+        if hasattr(self, "warranty_note_text"):
+            data["warranty_note"] = self.warranty_note_text.get("1.0", "end-1c").strip()
         data["day_type"] = self.day_type_var.get()
         try:
             data["contract_days"] = int(float(data.get("contract_days") or 0))
@@ -2721,7 +2987,8 @@ class App(tk.Tk):
 
         bids = []
         for r in self.bid_tree.get_rows():
-            bids.append({"round_no": r[0] or 1, "online_date": r[1], "open_date": r[2]})
+            vals = (r + [""] * 5)[:5]
+            bids.append({"round_no": vals[1] or 1, "online_date": vals[2], "open_date": vals[3], "award_date": vals[4]})
         self.db.replace_rows("bids", self.current_project_id, bids)
 
         holidays = [
@@ -2869,16 +3136,40 @@ class App(tk.Tk):
             "actual_finish": "實際竣工日", "contractor": "承攬商", "company_address": "公司地址",
             "responsible_person": "負責人", "contact_person": "聯絡人", "phone": "電話",
             "fax": "傳真電話", "tax_id": "統一編號", "project_description": "工程說明",
+            "planned_precheck_date": "預定初驗日", "actual_precheck_date": "實際初驗日",
+            "planned_acceptance_date": "預定驗收日", "actual_acceptance_date": "實際驗收日",
+            "settlement_date": "決算日", "warranty_years": "保固年限", "warranty_end_date": "保固結束日",
+            "warranty_note": "保固備註", "performance_bond_rate": "履保金比例",
             "contract_budget_net": "發包工程費-預算(未稅)", "contract_award_net": "發包工程費-決標(未稅)",
             "contract_budget_tax": "發包工程費-稅金(預算)", "contract_award_tax": "發包工程費-稅金(決標)",
             "contract_budget_total": "發包工程費-預算(含稅)", "contract_award_total": "發包工程費-決標(契約金額含稅)",
             "labor_budget": "包工費-預算", "labor_award": "包工費-決標",
             "deposit_difference": "差額保證金", "deposit_performance": "履約保證金", "deposit_total": "保證金總額",
             "final_contract_amount": "竣工發包工程費", "warranty_rate": "保固金比例", "warranty_deposit": "保固保證金",
+            "budget_total_amount": "預算內容-總預算", "budget_unfinished_amount": "預算內容-未完工程",
+            "budget_input_tax": "預算內容-進項稅額", "budget_contract_amount": "預算發包工程費-預算金額",
+            "budget_contract_tax": "預算發包工程費-稅金", "budget_contract_total": "預算發包工程費-預算總計(含稅)",
+            "budget_labor": "預算包工費-預算", "budget_mgmt_fee": "預算發包以外-工程管理費",
+            "budget_self_labor": "預算發包以外-自辦工費", "budget_self_material": "預算發包以外-自購材料費",
+            "budget_spare_material": "預算發包以外-路備材料費", "budget_railway_material": "預算發包以外-路購材料費",
+            "budget_supervision_fee": "預算發包以外-監理費", "budget_freight": "預算發包以外-運雜費",
+            "budget_air_pollution_fee": "預算發包以外-空汙費", "budget_other": "預算發包以外-其他",
+            "award_total_amount": "決標內容-總預算", "award_unfinished_amount": "決標內容-未完工程",
+            "award_input_tax": "決標內容-進項稅額", "award_contract_amount": "決標發包工程費-發包契約金額",
+            "award_contract_tax": "決標發包工程費-營業稅", "award_contract_total": "決標發包工程費-決標金額",
+            "award_base_price": "決標發包工程費-底價", "award_contract_budget_ratio": "決標/預算",
+            "award_contract_base_ratio": "決標/底價", "award_base_budget_ratio": "底價/預算",
+            "award_labor": "決標包工費-發包", "award_mgmt_fee": "決標發包以外-工程管理費",
+            "award_self_labor": "決標發包以外-自辦工費", "award_self_material": "決標發包以外-自購材料費",
+            "award_spare_material": "決標發包以外-路備材料費", "award_railway_material": "決標發包以外-路購材料費",
+            "award_supervision_fee": "決標發包以外-監理費", "award_freight": "決標發包以外-運雜費",
+            "award_air_pollution_fee": "決標發包以外-空汙費", "award_other": "決標發包以外-其他",
         }
         for key, label in labels.items():
             if key == "project_description" and hasattr(self, "project_description_text"):
                 value = self.project_description_text.get("1.0", "end-1c")
+            elif key == "warranty_note" and hasattr(self, "warranty_note_text"):
+                value = self.warranty_note_text.get("1.0", "end-1c")
             else:
                 value = self.basic_vars[key].get() if key in self.basic_vars else ""
             rows.append([label, value])
@@ -2953,6 +3244,30 @@ class App(tk.Tk):
             "差額保證金": "deposit_difference", "履約保證金": "deposit_performance", "保證金總額": "deposit_total",
             "竣工發包工程費": "final_contract_amount", "保固金比例": "warranty_rate", "保固保證金": "warranty_deposit",
         }
+        label_to_key.update({
+            "預定初驗日": "planned_precheck_date", "實際初驗日": "actual_precheck_date",
+            "預定驗收日": "planned_acceptance_date", "實際驗收日": "actual_acceptance_date",
+            "決算日": "settlement_date", "保固年限": "warranty_years", "保固結束日": "warranty_end_date",
+            "保固備註": "warranty_note", "履保金比例": "performance_bond_rate",
+            "預算內容-總預算": "budget_total_amount", "預算內容-未完工程": "budget_unfinished_amount",
+            "預算內容-進項稅額": "budget_input_tax", "預算發包工程費-預算金額": "budget_contract_amount",
+            "預算發包工程費-稅金": "budget_contract_tax", "預算發包工程費-預算總計(含稅)": "budget_contract_total",
+            "預算包工費-預算": "budget_labor", "預算發包以外-工程管理費": "budget_mgmt_fee",
+            "預算發包以外-自辦工費": "budget_self_labor", "預算發包以外-自購材料費": "budget_self_material",
+            "預算發包以外-路備材料費": "budget_spare_material", "預算發包以外-路購材料費": "budget_railway_material",
+            "預算發包以外-監理費": "budget_supervision_fee", "預算發包以外-運雜費": "budget_freight",
+            "預算發包以外-空汙費": "budget_air_pollution_fee", "預算發包以外-其他": "budget_other",
+            "決標內容-總預算": "award_total_amount", "決標內容-未完工程": "award_unfinished_amount",
+            "決標內容-進項稅額": "award_input_tax", "決標發包工程費-發包契約金額": "award_contract_amount",
+            "決標發包工程費-營業稅": "award_contract_tax", "決標發包工程費-決標金額": "award_contract_total",
+            "決標發包工程費-底價": "award_base_price", "決標/預算": "award_contract_budget_ratio",
+            "決標/底價": "award_contract_base_ratio", "底價/預算": "award_base_budget_ratio",
+            "決標包工費-發包": "award_labor", "決標發包以外-工程管理費": "award_mgmt_fee",
+            "決標發包以外-自辦工費": "award_self_labor", "決標發包以外-自購材料費": "award_self_material",
+            "決標發包以外-路備材料費": "award_spare_material", "決標發包以外-路購材料費": "award_railway_material",
+            "決標發包以外-監理費": "award_supervision_fee", "決標發包以外-運雜費": "award_freight",
+            "決標發包以外-空汙費": "award_air_pollution_fee", "決標發包以外-其他": "award_other",
+        })
         for row in rows:
             if len(row) < 2:
                 continue
@@ -2966,6 +3281,9 @@ class App(tk.Tk):
             if key == "project_description" and hasattr(self, "project_description_text"):
                 self.project_description_text.delete("1.0", "end")
                 self.project_description_text.insert("1.0", row[1])
+            elif key == "warranty_note" and hasattr(self, "warranty_note_text"):
+                self.warranty_note_text.delete("1.0", "end")
+                self.warranty_note_text.insert("1.0", row[1])
             elif key in self.basic_vars:
                 self.basic_vars[key].set(row[1])
 
