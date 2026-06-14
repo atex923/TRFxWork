@@ -1,12 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 """
-KAGAMI 臺鐵工程本本 V0.2.0
+KAGAMI 臺鐵工程本本 V0.2.5
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
 - 開啟時自動載入上次編輯工程
 - 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、工程執行紀錄表
-- V0.2.0：施工日曆累計到契約工期，新增預算資料分頁。
+- V0.2.5：放寬第二分頁前三表日期與名稱欄寬。
 """
 
 import os
@@ -18,14 +18,15 @@ import zipfile
 import calendar
 import re
 import sys
+import json
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_VERSION = "V0.2.0"
-APP_RELEASE_SUMMARY = "施工日曆累計到契約工期，新增預算資料分頁。"
+APP_VERSION = "V0.2.5"
+APP_RELEASE_SUMMARY = "放寬第二分頁前三表日期與名稱欄寬。"
 APP_TITLE = f"KAGAMI 臺鐵工程本本 {APP_VERSION}"
 
 
@@ -452,6 +453,29 @@ class DB:
             updated_at TEXT
         )
         """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS budget_books (
+            project_id INTEGER,
+            area TEXT,
+            rows_json TEXT,
+            source_file TEXT,
+            updated_at TEXT,
+            PRIMARY KEY(project_id, area)
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS change_records (
+            project_id INTEGER,
+            change_no TEXT,
+            fields_json TEXT,
+            demand_json TEXT,
+            confirm_json TEXT,
+            budget_json TEXT,
+            source_file TEXT,
+            updated_at TEXT,
+            PRIMARY KEY(project_id, change_no)
+        )
+        """)
         try:
             c.execute("ALTER TABLE projects ADD COLUMN password_hash TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -509,7 +533,8 @@ class DB:
             "bids", "weather",
             "payment_contract", "payment_other", "payment_admin",
             "execution_records", "execution_status", "project_milestones",
-            "holiday_project_excludes", "workday_project_excludes", "railway_project_excludes"
+            "holiday_project_excludes", "workday_project_excludes", "railway_project_excludes",
+            "budget_books", "change_records"
         ):
             self.conn.execute(f"DELETE FROM {table} WHERE project_id=?", (pid,))
         self.conn.execute("DELETE FROM projects WHERE id=?", (pid,))
@@ -523,6 +548,62 @@ class DB:
         self.conn.execute(
             "INSERT OR REPLACE INTO execution_status(project_id, status, updated_at) VALUES(?,?,?)",
             (pid, status, datetime.now().isoformat(timespec="seconds"))
+        )
+        self.conn.commit()
+
+    def save_budget_book(self, pid, area, rows, source_file=""):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO budget_books(project_id, area, rows_json, source_file, updated_at) VALUES(?,?,?,?,?)",
+            (pid, area, json.dumps(rows, ensure_ascii=False), source_file, datetime.now().isoformat(timespec="seconds"))
+        )
+        self.conn.commit()
+
+    def budget_book(self, pid, area):
+        row = self.conn.execute("SELECT rows_json, source_file FROM budget_books WHERE project_id=? AND area=?", (pid, area)).fetchone()
+        if not row:
+            return [], ""
+        try:
+            return json.loads(row["rows_json"] or "[]"), row["source_file"] or ""
+        except json.JSONDecodeError:
+            return [], row["source_file"] or ""
+
+    def change_numbers(self, pid):
+        rows = self.conn.execute(
+            "SELECT change_no FROM change_records WHERE project_id=? ORDER BY CAST(change_no AS INTEGER), change_no",
+            (pid,)
+        ).fetchall()
+        return [r["change_no"] for r in rows]
+
+    def change_record(self, pid, change_no):
+        row = self.conn.execute("SELECT * FROM change_records WHERE project_id=? AND change_no=?", (pid, str(change_no))).fetchone()
+        if not row:
+            return None
+        def loads(key, default):
+            try:
+                return json.loads(row[key] or default)
+            except json.JSONDecodeError:
+                return json.loads(default)
+        return {
+            "change_no": row["change_no"],
+            "fields": loads("fields_json", "{}"),
+            "demand": loads("demand_json", "[]"),
+            "confirm": loads("confirm_json", "[]"),
+            "budget": loads("budget_json", "[]"),
+            "source_file": row["source_file"] or "",
+        }
+
+    def save_change_record(self, pid, change_no, fields, demand_rows, confirm_rows, budget_rows, source_file=""):
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO change_records
+            (project_id, change_no, fields_json, demand_json, confirm_json, budget_json, source_file, updated_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            """,
+            (
+                pid, str(change_no), json.dumps(fields, ensure_ascii=False),
+                json.dumps(demand_rows, ensure_ascii=False), json.dumps(confirm_rows, ensure_ascii=False),
+                json.dumps(budget_rows, ensure_ascii=False), source_file, datetime.now().isoformat(timespec="seconds")
+            )
         )
         self.conn.commit()
 
@@ -895,6 +976,7 @@ class App(tk.Tk):
         self.recalculating = False
         self.save_after_id = None
         self.readonly_basic_keys = set()
+        self.data_edit_enabled_var = tk.BooleanVar(value=True)
 
         self.style = ttk.Style()
         self.style.configure("Top.TLabelframe.Label", font=("Microsoft JhengHei UI", 11, "bold"))
@@ -904,6 +986,7 @@ class App(tk.Tk):
         self.style.configure("Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"))
         self.style.configure("Grid.Treeview", rowheight=26, font=("Microsoft JhengHei UI", 10), borderwidth=1, relief="solid")
         self.style.configure("Grid.Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"), borderwidth=1, relief="solid")
+        self.style.configure("DayTable.TLabelframe.Label", font=("Microsoft JhengHei UI", 14, "bold"))
         self.style.map("TEntry", foreground=[("disabled", "#1f4e79")])
         self.style.map("TCombobox", foreground=[("disabled", "#1f4e79")])
 
@@ -972,30 +1055,33 @@ class App(tk.Tk):
         self.tab_execution = ttk.Frame(self.nb, padding=8)
         self.tab_milestone = ttk.Frame(self.nb, padding=8)
         self.tab_budget_data = ttk.Frame(self.nb, padding=8)
+        self.tab_change_data = ttk.Frame(self.nb, padding=8)
 
-        day_split = tk.PanedWindow(self.tab_day_tables, orient=tk.VERTICAL, sashwidth=8, sashrelief="raised", bg="#d9d9d9")
-        day_split.grid(row=0, column=0, sticky="nsew")
         self.tab_day_tables.grid_rowconfigure(0, weight=1)
         self.tab_day_tables.grid_columnconfigure(0, weight=1)
-        day_top = ttk.Frame(day_split, padding=(0, 0, 0, 6))
-        day_bottom = ttk.Frame(day_split, padding=(0, 6, 0, 0))
-        day_split.add(day_top)
-        day_split.add(day_bottom)
+        self.tab_day_tables.grid_rowconfigure(1, weight=0)
+        day_tables_row = ttk.Frame(self.tab_day_tables)
+        day_tables_row.grid(row=0, column=0, sticky="nsew")
+        day_tables_row.grid_rowconfigure(0, weight=1)
+        for i in range(4):
+            day_tables_row.grid_columnconfigure(i, weight=1, uniform="day_tables")
 
-        day_top.grid_rowconfigure(0, weight=1)
-        for i in range(3):
-            day_top.grid_columnconfigure(i, weight=1, uniform="day_top")
-        day_bottom.grid_rowconfigure(0, weight=1)
-        day_bottom.grid_columnconfigure(0, weight=1)
-
-        self.tab_holiday = ttk.LabelFrame(day_top, text="假期表", padding=8)
-        self.tab_workday = ttk.LabelFrame(day_top, text="補班日表", padding=8)
-        self.tab_railway = ttk.LabelFrame(day_top, text="鐵路疏運表", padding=8)
-        self.tab_weather = ttk.LabelFrame(day_bottom, text="晴雨表", padding=8)
+        self.tab_holiday = ttk.LabelFrame(day_tables_row, text="假期表", padding=8, style="DayTable.TLabelframe")
+        self.tab_workday = ttk.LabelFrame(day_tables_row, text="補班日表", padding=8, style="DayTable.TLabelframe")
+        self.tab_railway = ttk.LabelFrame(day_tables_row, text="鐵路疏運表", padding=8, style="DayTable.TLabelframe")
+        self.tab_weather = ttk.LabelFrame(day_tables_row, text="晴雨表", padding=8, style="DayTable.TLabelframe")
         self.tab_holiday.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         self.tab_workday.grid(row=0, column=1, sticky="nsew", padx=4)
-        self.tab_railway.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
-        self.tab_weather.grid(row=0, column=0, sticky="nsew")
+        self.tab_railway.grid(row=0, column=2, sticky="nsew", padx=4)
+        self.tab_weather.grid(row=0, column=3, sticky="nsew", padx=(4, 0))
+        day_lock = ttk.Frame(self.tab_day_tables)
+        day_lock.grid(row=1, column=0, sticky="e", pady=(6, 0))
+        ttk.Checkbutton(
+            day_lock,
+            text="資料編輯鎖定解除（勾選才可編輯）",
+            variable=self.data_edit_enabled_var,
+            command=self.apply_edit_lock_state
+        ).pack(side="right")
 
         self.nb.add(self.tab_basic, text="工程基本資料")
         self.nb.add(self.tab_day_tables, text="假期/晴雨/疏運表")
@@ -1006,6 +1092,7 @@ class App(tk.Tk):
         self.nb.add(self.tab_execution, text="工程執行紀錄表")
         self.nb.add(self.tab_milestone, text="工程大事記")
         self.nb.add(self.tab_budget_data, text="預算資料")
+        self.nb.add(self.tab_change_data, text="變更資料")
 
         self.build_basic_tab()
         self.build_holiday_tab()
@@ -1016,6 +1103,7 @@ class App(tk.Tk):
         self.build_execution_tab()
         self.build_milestone_tab()
         self.build_budget_data_tab()
+        self.build_change_data_tab()
         self.assign_tree_edit_guards()
 
     def toggle_summary_area(self):
@@ -1433,7 +1521,6 @@ class App(tk.Tk):
         form.pack(fill="x")
         self.section_title(form, "工程基本資料", 0)
 
-        self.data_edit_enabled_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             form,
             text="資料編輯鎖定解除（勾選才可編輯）",
@@ -1636,7 +1723,6 @@ class App(tk.Tk):
         render_calendar()
 
     def build_holiday_tab(self):
-        self.add_page_edit_toggle(self.tab_holiday)
         toolbar = ttk.Frame(self.tab_holiday)
         toolbar.pack(fill="x", pady=(0, 6))
         ttk.Label(toolbar, text="假期表：按「新增一列」用日曆新增。").pack(side="left")
@@ -1647,13 +1733,12 @@ class App(tk.Tk):
             self.tab_holiday,
             ["exclude", "day", "name"],
             ["排除", "日期", "假日名稱"],
-            [45, 160, 160],
+            [36, 138, 135],
             self.mark_dirty,
             add_command=self.open_holiday_calendar_dialog
         )
         self.holiday_tree.pack(fill="both", expand=True, pady=6)
 
-        self.add_page_edit_toggle(self.tab_workday)
         workday_toolbar = ttk.Frame(self.tab_workday)
         workday_toolbar.pack(fill="x", pady=(0, 6))
         ttk.Label(workday_toolbar, text="補班日表：按「新增一列」用日曆新增。").pack(side="left")
@@ -1661,7 +1746,7 @@ class App(tk.Tk):
             self.tab_workday,
             ["exclude", "day", "name"],
             ["排除", "日期", "補班名稱"],
-            [45, 160, 160],
+            [36, 138, 135],
             self.mark_dirty,
             add_command=self.open_workday_calendar_dialog
         )
@@ -1897,7 +1982,6 @@ class App(tk.Tk):
         render()
 
     def build_weather_tab(self):
-        self.add_page_edit_toggle(self.tab_weather)
         ttk.Label(
             self.tab_weather,
             text="晴雨表：按「新增一列」會開啟年、月日曆表；下方可分別輸入上午、下午、天氣、場地與備註。"
@@ -1906,7 +1990,7 @@ class App(tk.Tk):
             self.tab_weather,
             ["day", "morning", "afternoon", "typhoon", "site", "note"],
             ["日期", "上午", "下午", "天氣", "場地", "備註"],
-            [130, 130, 130, 130, 130, 130],
+            [88, 56, 56, 56, 56, 72],
             self.mark_dirty,
             add_command=self.open_weather_calendar_dialog
         )
@@ -2061,7 +2145,6 @@ class App(tk.Tk):
         entries[0].focus_set()
 
     def build_railway_tab(self):
-        self.add_page_edit_toggle(self.tab_railway)
         top = ttk.Frame(self.tab_railway)
         top.pack(fill="x")
         ttk.Label(top, text="鐵路疏運停工日期：可讀入第二分頁假期表；新增時會插在目前選取列下方。").pack(side="left")
@@ -2070,7 +2153,7 @@ class App(tk.Tk):
             self.tab_railway,
             ["exclude", "day", "note"],
             ["排除", "日期", "疏運名稱"],
-            [45, 160, 160],
+            [36, 138, 135],
             self.mark_dirty,
             add_command=self.open_railway_calendar_dialog
         )
@@ -2528,7 +2611,281 @@ class App(tk.Tk):
         for box in (budget_box, contract_box):
             box.grid_rowconfigure(0, weight=1)
             box.grid_columnconfigure(0, weight=1)
-            tk.Frame(box, bg=box.cget("bg")).grid(row=0, column=0, sticky="nsew")
+        self.budget_book_trees = {}
+        self.budget_book_sources = {}
+        self.create_budget_book_panel(budget_box, "budget", "讀入預算書", "#d9eaf7")
+        self.create_budget_book_panel(contract_box, "contract", "讀入預算書", "#d9ead3")
+
+    def create_budget_book_panel(self, parent, area, button_text, bg):
+        parent.grid_rowconfigure(1, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+        top = tk.Frame(parent, bg=bg)
+        top.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Button(top, text=button_text, command=lambda a=area: self.import_budget_book(a)).pack(side="left")
+        source_var = tk.StringVar(value="")
+        self.budget_book_sources[area] = source_var
+        ttk.Label(top, textvariable=source_var).pack(side="left", padx=8)
+        tree = EditableTree(
+            parent,
+            ["c1", "c2", "c3", "c4", "c5", "c6"],
+            ["欄1", "欄2", "欄3", "欄4", "欄5", "欄6"],
+            [120, 120, 120, 120, 120, 120],
+            self.mark_dirty,
+        )
+        tree.grid(row=1, column=0, sticky="nsew")
+        self.budget_book_trees[area] = tree
+
+    def set_budget_book_rows(self, area, rows, source_file=""):
+        if area not in getattr(self, "budget_book_trees", {}):
+            return
+        normalized = [(list(row) + [""] * 6)[:6] for row in rows]
+        self.budget_book_trees[area].set_rows(normalized)
+        if area in self.budget_book_sources:
+            self.budget_book_sources[area].set(os.path.basename(source_file) if source_file else "")
+
+    def import_budget_book(self, area):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "請先解除鎖定。")
+            return
+        path = filedialog.askopenfilename(
+            title="選擇預算書 Excel 檔",
+            filetypes=[("Excel Workbook", "*.xlsx")]
+        )
+        if not path:
+            return
+        try:
+            rows = read_simple_xlsx(path)
+            if rows and len(rows[0]) == 1:
+                rows = rows[1:]
+            self.set_budget_book_rows(area, rows, path)
+            if self.current_project_id:
+                self.db.save_budget_book(self.current_project_id, area, rows, path)
+            self.mark_dirty()
+            self.status_var.set(f"已讀入預算書：{os.path.basename(path)}")
+        except Exception as exc:
+            messagebox.showerror("讀入預算書失敗", str(exc))
+
+    def build_change_data_tab(self):
+        self.add_page_edit_toggle(self.tab_change_data)
+        self.change_upper_visible = True
+        self.change_vars = {k: tk.StringVar() for k in [
+            "change_no", "change_total", "add_original", "deduct_original", "add_new",
+            "send_public_works", "send_accounting", "accounting_approved",
+            "public_works_approved", "company_approved", "aa_review_done",
+        ]}
+        self.change_vars["change_no"].set("1")
+
+        top_bar = ttk.Frame(self.tab_change_data)
+        top_bar.pack(fill="x", pady=(0, 6))
+        ttk.Button(top_bar, text="▲", width=3, command=self.toggle_change_upper).pack(side="right")
+        self.change_toggle_btn = top_bar.winfo_children()[-1]
+        ttk.Button(top_bar, text="儲存本次變更", command=self.save_change_data).pack(side="right", padx=4)
+
+        self.change_upper = ttk.Frame(self.tab_change_data)
+        self.change_upper.pack(fill="x")
+        header = ttk.Frame(self.change_upper)
+        header.pack(fill="x", pady=(0, 6))
+        ttk.Label(header, text="第幾次變更預算").pack(side="left")
+        ttk.Spinbox(header, from_=1, to=999, textvariable=self.change_vars["change_no"], width=8).pack(side="left", padx=6)
+        ttk.Button(header, text="讀入預算書", command=self.import_change_budget_book).pack(side="left", padx=8)
+
+        history = ttk.LabelFrame(self.change_upper, text="變更歷程", padding=8)
+        history.pack(fill="x", pady=4)
+        hist_left = ttk.Frame(history)
+        hist_left.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        hist_right = ttk.Frame(history)
+        hist_right.pack(side="left", fill="both", expand=True, padx=(4, 0))
+        ttk.Button(hist_left, text="新增需求會議", command=lambda: self.open_change_meeting_dialog("demand")).pack(anchor="w")
+        self.change_demand_tree = EditableTree(hist_left, ["no", "day", "doc_no"], ["第幾次需求會議", "會議時間", "文號"], [130, 120, 180], self.mark_dirty)
+        self.change_demand_tree.pack(fill="both", expand=True, pady=4)
+        ttk.Button(hist_right, text="新增確認會議", command=lambda: self.open_change_meeting_dialog("confirm")).pack(anchor="w")
+        self.change_confirm_tree = EditableTree(hist_right, ["no", "day", "doc_no"], ["第幾次確認會議", "會議時間", "文號"], [130, 120, 180], self.mark_dirty)
+        self.change_confirm_tree.pack(fill="both", expand=True, pady=4)
+
+        money_box = ttk.LabelFrame(self.change_upper, text="變更金額", padding=8)
+        money_box.pack(fill="x", pady=4)
+        money_fields = [
+            ("變更金額總計", "change_total"), ("原工項追加金額", "add_original"),
+            ("原工項追減金額", "deduct_original"), ("新增工項金額", "add_new"),
+        ]
+        for i, (label, key) in enumerate(money_fields):
+            ttk.Label(money_box, text=label).grid(row=0, column=i*2, sticky="e", padx=4, pady=3)
+            ent = ttk.Entry(money_box, textvariable=self.change_vars[key], width=16)
+            ent.grid(row=0, column=i*2+1, sticky="ew", padx=4, pady=3)
+            self.edit_widgets.append(ent)
+        for i in range(8):
+            money_box.grid_columnconfigure(i, weight=1)
+
+        reason_box = ttk.LabelFrame(self.change_upper, text="變更事由", padding=8)
+        reason_box.pack(fill="x", pady=4)
+        self.change_reason_text = tk.Text(reason_box, height=5, width=80, wrap="word", relief="solid", bd=1)
+        self.change_reason_text.pack(fill="x", expand=True)
+        self.edit_widgets.append(self.change_reason_text)
+
+        send_box = ttk.LabelFrame(self.change_upper, text="送預算書時間", padding=8)
+        send_box.pack(fill="x", pady=4)
+        date_fields = [
+            ("工務處", "send_public_works"), ("主計單位", "send_accounting"),
+            ("主計單位簽準", "accounting_approved"), ("工務處簽準", "public_works_approved"),
+            ("公司簽準", "company_approved"), ("AA預算書審核完成", "aa_review_done"),
+        ]
+        for i, (label, key) in enumerate(date_fields):
+            row, col = divmod(i, 3)
+            ttk.Label(send_box, text=label).grid(row=row, column=col*3, sticky="e", padx=4, pady=3)
+            ent = ttk.Entry(send_box, textvariable=self.change_vars[key], width=14)
+            ent.grid(row=row, column=col*3+1, sticky="ew", padx=2, pady=3)
+            ttk.Button(send_box, text="▼", width=3, command=lambda v=self.change_vars[key]: self.open_date_picker(v, "選擇日期")).grid(row=row, column=col*3+2, padx=2, pady=3)
+            self.edit_widgets.append(ent)
+        for i in range(9):
+            send_box.grid_columnconfigure(i, weight=1)
+
+        lower = ttk.LabelFrame(self.tab_change_data, text="變更情形與預算書資料區", padding=8)
+        lower.pack(fill="both", expand=True, pady=(8, 0))
+        select_row = ttk.Frame(lower)
+        select_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(select_row, text="第幾次預算變更").pack(side="left")
+        self.change_select_var = tk.StringVar()
+        self.change_select_combo = ttk.Combobox(select_row, textvariable=self.change_select_var, state="readonly", width=12)
+        self.change_select_combo.pack(side="left", padx=6)
+        self.change_select_combo.bind("<<ComboboxSelected>>", lambda e: self.show_selected_change())
+        ttk.Button(select_row, text="顯示", command=self.show_selected_change).pack(side="left")
+        self.change_summary = tk.Text(lower, height=8, wrap="word")
+        self.change_summary.pack(fill="x", pady=(0, 6))
+        self.change_budget_tree = EditableTree(lower, ["c1", "c2", "c3", "c4", "c5", "c6"], ["欄1", "欄2", "欄3", "欄4", "欄5", "欄6"], [120, 120, 120, 120, 120, 120], self.mark_dirty)
+        self.change_budget_tree.pack(fill="both", expand=True)
+
+    def toggle_change_upper(self):
+        if self.change_upper_visible:
+            self.change_upper.pack_forget()
+            self.change_upper_visible = False
+            self.change_toggle_btn.configure(text="▼")
+        else:
+            self.change_upper.pack(fill="x", before=self.tab_change_data.winfo_children()[-1])
+            self.change_upper_visible = True
+            self.change_toggle_btn.configure(text="▲")
+
+    def open_change_meeting_dialog(self, kind):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "請先解除鎖定。")
+            return
+        win = tk.Toplevel(self)
+        win.title("新增需求會議" if kind == "demand" else "新增確認會議")
+        win.transient(self)
+        win.grab_set()
+        no_var = tk.StringVar()
+        day_var = tk.StringVar()
+        doc_var = tk.StringVar()
+        form = ttk.Frame(win, padding=10)
+        form.pack(fill="x")
+        labels = [("第幾次需求會議" if kind == "demand" else "第幾次確認會議", no_var), ("會議時間", day_var), ("文號", doc_var)]
+        for i, (label, var) in enumerate(labels):
+            ttk.Label(form, text=label).grid(row=i, column=0, sticky="e", padx=4, pady=3)
+            ttk.Entry(form, textvariable=var, width=28).grid(row=i, column=1, sticky="ew", padx=4, pady=3)
+            if i == 1:
+                ttk.Button(form, text="▼", width=3, command=lambda: self.open_date_picker(day_var, "選擇會議時間")).grid(row=i, column=2, padx=2)
+        form.grid_columnconfigure(1, weight=1)
+        def ok():
+            tree = self.change_demand_tree if kind == "demand" else self.change_confirm_tree
+            tree.add_row_after_selection([no_var.get().strip(), day_var.get().strip(), doc_var.get().strip()])
+            win.destroy()
+        ttk.Button(win, text="新增", command=ok).pack(side="right", padx=10, pady=10)
+        ttk.Button(win, text="取消", command=win.destroy).pack(side="right", pady=10)
+
+    def import_change_budget_book(self):
+        path = filedialog.askopenfilename(title="選擇變更預算書 Excel 檔", filetypes=[("Excel Workbook", "*.xlsx")])
+        if not path:
+            return
+        try:
+            rows = read_simple_xlsx(path)
+            if rows and len(rows[0]) == 1:
+                rows = rows[1:]
+            self.change_budget_tree.set_rows([(list(row) + [""] * 6)[:6] for row in rows])
+            self.change_budget_source = path
+            self.mark_dirty()
+            self.status_var.set(f"已讀入變更預算書：{os.path.basename(path)}")
+        except Exception as exc:
+            messagebox.showerror("讀入預算書失敗", str(exc))
+
+    def save_change_data(self):
+        if not self.current_project_id:
+            return
+        change_no = self.change_vars["change_no"].get().strip() or "1"
+        fields = {k: v.get().strip() for k, v in self.change_vars.items()}
+        fields["reason"] = self.change_reason_text.get("1.0", "end-1c")
+        self.db.save_change_record(
+            self.current_project_id,
+            change_no,
+            fields,
+            self.change_demand_tree.get_rows(),
+            self.change_confirm_tree.get_rows(),
+            self.change_budget_tree.get_rows(),
+            getattr(self, "change_budget_source", ""),
+        )
+        self.refresh_change_select()
+        self.status_var.set(f"已儲存第 {change_no} 次預算變更")
+
+    def refresh_change_select(self):
+        if not self.current_project_id or not hasattr(self, "change_select_combo"):
+            return
+        nums = self.db.change_numbers(self.current_project_id)
+        self.change_select_combo["values"] = nums
+        if nums and self.change_select_var.get() not in nums:
+            self.change_select_var.set(nums[-1])
+
+    def clear_change_editor(self):
+        if not hasattr(self, "change_vars"):
+            return
+        for key, var in self.change_vars.items():
+            var.set("1" if key == "change_no" else "")
+        self.change_reason_text.delete("1.0", "end")
+        self.change_demand_tree.set_rows([])
+        self.change_confirm_tree.set_rows([])
+        self.change_budget_tree.set_rows([])
+        self.change_summary.delete("1.0", "end")
+        self.change_budget_source = ""
+
+    def load_change_to_editor(self, change_no):
+        record = self.db.change_record(self.current_project_id, change_no)
+        if not record:
+            return
+        fields = record["fields"]
+        for key, var in self.change_vars.items():
+            var.set(fields.get(key, record["change_no"] if key == "change_no" else ""))
+        self.change_reason_text.delete("1.0", "end")
+        self.change_reason_text.insert("1.0", fields.get("reason", ""))
+        self.change_demand_tree.set_rows(record["demand"])
+        self.change_confirm_tree.set_rows(record["confirm"])
+        self.change_budget_tree.set_rows([(list(row) + [""] * 6)[:6] for row in record["budget"]])
+        self.change_budget_source = record["source_file"]
+
+    def show_selected_change(self):
+        if not self.current_project_id:
+            return
+        change_no = self.change_select_var.get().strip()
+        if not change_no:
+            return
+        record = self.db.change_record(self.current_project_id, change_no)
+        if not record:
+            return
+        self.load_change_to_editor(change_no)
+        fields = record["fields"]
+        lines = [
+            f"第 {record['change_no']} 次預算變更",
+            f"變更金額總計：{fields.get('change_total', '')}",
+            f"原工項追加金額：{fields.get('add_original', '')}",
+            f"原工項追減金額：{fields.get('deduct_original', '')}",
+            f"新增工項金額：{fields.get('add_new', '')}",
+            f"變更事由：{fields.get('reason', '')}",
+            f"送預算書時間-工務處：{fields.get('send_public_works', '')}",
+            f"送預算書時間-主計單位：{fields.get('send_accounting', '')}",
+            f"主計單位簽準：{fields.get('accounting_approved', '')}",
+            f"工務處簽準：{fields.get('public_works_approved', '')}",
+            f"公司簽準：{fields.get('company_approved', '')}",
+            f"AA預算書審核完成：{fields.get('aa_review_done', '')}",
+        ]
+        self.change_summary.delete("1.0", "end")
+        self.change_summary.insert("1.0", "\n".join(lines))
+        self.change_budget_tree.set_rows([(list(row) + [""] * 6)[:6] for row in record["budget"]])
 
     def build_status_tab(self):
         box = ttk.LabelFrame(self.tab_status, text="工程執行狀態", padding=12)
@@ -2574,10 +2931,13 @@ class App(tk.Tk):
         for name in [
             "bid_tree", "holiday_tree", "workday_tree", "weather_tree", "railway_tree",
             "payment_contract_tree", "payment_other_tree", "payment_admin_tree",
-            "execution_tree", "milestone_tree"
+            "execution_tree", "milestone_tree", "change_demand_tree", "change_confirm_tree",
+            "change_budget_tree"
         ]:
             if hasattr(self, name):
                 getattr(self, name).can_edit = self.can_edit
+        for tree in getattr(self, "budget_book_trees", {}).values():
+            tree.can_edit = self.can_edit
 
     def apply_edit_lock_state(self):
         unlocked = self.can_edit()
@@ -2810,6 +3170,17 @@ class App(tk.Tk):
             for r in self.db.rows("project_milestones", pid)
         ])
         self.refresh_milestone_rows()
+        for area in ("budget", "contract"):
+            rows, source = self.db.budget_book(pid, area)
+            self.set_budget_book_rows(area, rows, source)
+        self.refresh_change_select()
+        nums = self.db.change_numbers(pid)
+        if nums:
+            self.change_select_var.set(nums[-1])
+            self.load_change_to_editor(nums[-1])
+            self.show_selected_change()
+        else:
+            self.clear_change_editor()
         self.execution_status_var.set(self.db.get_status(pid) or "規劃中")
         self.project_password_hash = self.db.get_password_hash(pid)
         self.edit_unlocked = False if self.project_password_hash else True
@@ -3166,6 +3537,28 @@ class App(tk.Tk):
             })
         self.db.replace_rows("project_milestones", self.current_project_id, milestone_rows)
         self.db.save_status(self.current_project_id, self.execution_status_var.get() if hasattr(self, "execution_status_var") else "")
+        if hasattr(self, "budget_book_trees"):
+            for area, tree in self.budget_book_trees.items():
+                source = self.budget_book_sources.get(area).get() if area in self.budget_book_sources else ""
+                self.db.save_budget_book(self.current_project_id, area, tree.get_rows(), source)
+        if hasattr(self, "change_vars"):
+            change_no = self.change_vars["change_no"].get().strip()
+            has_change_data = any(v.get().strip() for v in self.change_vars.values())
+            has_change_data = has_change_data or bool(self.change_reason_text.get("1.0", "end-1c").strip())
+            has_change_data = has_change_data or bool(self.change_demand_tree.get_rows() or self.change_confirm_tree.get_rows() or self.change_budget_tree.get_rows())
+            if change_no and has_change_data:
+                fields = {k: v.get().strip() for k, v in self.change_vars.items()}
+                fields["reason"] = self.change_reason_text.get("1.0", "end-1c")
+                self.db.save_change_record(
+                    self.current_project_id,
+                    change_no,
+                    fields,
+                    self.change_demand_tree.get_rows(),
+                    self.change_confirm_tree.get_rows(),
+                    self.change_budget_tree.get_rows(),
+                    getattr(self, "change_budget_source", ""),
+                )
+                self.refresh_change_select()
 
         self.db.set_setting("last_project_id", self.current_project_id)
         self.dirty = False
