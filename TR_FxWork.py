@@ -1,12 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 """
-KAGAMI 臺鐵工程本本 V0.1.9
+KAGAMI 臺鐵工程本本 V0.1.10
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
 - 開啟時自動載入上次編輯工程
 - 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、工程執行紀錄表
-- V0.1.9：調整第一分頁工程辦理情形、工程費與招標情形版面。
+- V0.1.10：調整總工程預算與總工程費用未完工程自動加總。
 """
 
 import os
@@ -24,8 +24,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_VERSION = "V0.1.9"
-APP_RELEASE_SUMMARY = "調整第一分頁工程辦理情形、工程費與招標情形版面。"
+APP_VERSION = "V0.1.10"
+APP_RELEASE_SUMMARY = "調整總工程預算與總工程費用未完工程自動加總。"
 APP_TITLE = f"KAGAMI 臺鐵工程本本 {APP_VERSION}"
 
 
@@ -1306,9 +1306,9 @@ class App(tk.Tk):
             for idx in range(6):
                 frame.grid_columnconfigure(idx, weight=1)
 
-        self.money_section_title(budget, "預算內容", 0)
+        self.money_section_title(budget, "總工程預算", 0)
         self.money_entry(budget, 1, 0, "總預算", "budget_total_amount", readonly=True)
-        self.money_entry(budget, 1, 2, "未完工程", "budget_unfinished_amount")
+        self.money_entry(budget, 1, 2, "未完工程", "budget_unfinished_amount", readonly=True)
         self.money_entry(budget, 2, 0, "進項稅額", "budget_input_tax", readonly=True)
         self.money_section_title(budget, "發包工程費", 3)
         self.money_entry(budget, 4, 0, "預算金額", "budget_contract_amount")
@@ -1327,20 +1327,20 @@ class App(tk.Tk):
         self.money_entry(budget, 12, 2, "空汙費", "budget_air_pollution_fee")
         self.money_entry(budget, 13, 0, "其他", "budget_other")
 
-        self.money_section_title(award, "決標內容", 0, columnspan=6)
-        self.award_money_entry(award, 1, 0, "總預算", "award_total_amount", "budget_total_amount", readonly=True)
-        self.award_money_entry(award, 1, 3, "未完工程", "award_unfinished_amount", "budget_unfinished_amount")
-        self.award_money_entry(award, 2, 0, "進項稅額", "award_input_tax", "budget_input_tax", readonly=True)
+        self.money_section_title(award, "總工程費用", 0, columnspan=6)
+        self.money_entry(award, 1, 0, "總預算", "award_total_amount", readonly=True)
+        self.money_entry(award, 1, 3, "未完工程", "award_unfinished_amount", readonly=True)
+        self.money_entry(award, 2, 0, "進項稅額", "award_input_tax", readonly=True)
         self.money_section_title(award, "發包工程費", 3, columnspan=6)
-        self.award_money_entry(award, 4, 0, "發包契約金額", "award_contract_amount", "budget_contract_amount", readonly=True)
-        self.award_money_entry(award, 4, 3, "營業稅", "award_contract_tax", "budget_contract_tax", readonly=True)
-        self.award_money_entry(award, 5, 0, "決標金額", "award_contract_total", "budget_contract_total")
-        self.award_money_entry(award, 5, 3, "底價", "award_base_price", "budget_contract_total")
+        self.money_entry(award, 4, 0, "發包契約金額", "award_contract_amount", readonly=True)
+        self.money_entry(award, 4, 3, "營業稅", "award_contract_tax", readonly=True)
+        self.money_entry(award, 5, 0, "決標金額", "award_contract_total")
+        self.money_entry(award, 5, 3, "底價", "award_base_price")
         self.money_entry(award, 6, 0, "決標/預算=", "award_contract_budget_ratio", readonly=True)
         self.money_entry(award, 6, 2, "決標/底價=", "award_contract_base_ratio", readonly=True)
         self.money_entry(award, 7, 0, "底價/預算=", "award_base_budget_ratio", readonly=True)
         self.money_section_title(award, "包工費", 8, columnspan=6)
-        self.award_money_entry(award, 9, 0, "發包", "award_labor", "budget_labor")
+        self.money_entry(award, 9, 0, "發包", "award_labor")
         self.money_section_title(award, "發包以外", 10, columnspan=6)
         self.award_money_entry(award, 11, 0, "工程管理費", "award_mgmt_fee", "budget_mgmt_fee")
         self.award_money_entry(award, 11, 3, "自辦工費", "award_self_labor", "budget_self_labor")
@@ -2897,11 +2897,29 @@ class App(tk.Tk):
                 self.basic_vars["warranty_rate"].set("3%")
 
             budget_contract = self.safe_amount(self.basic_vars.get("budget_contract_amount", tk.StringVar()).get())
+            budget_outside = sum(
+                self.safe_amount(self.basic_vars.get(key, tk.StringVar()).get())
+                for key in (
+                    "budget_mgmt_fee", "budget_self_labor", "budget_self_material", "budget_spare_material",
+                    "budget_railway_material", "budget_supervision_fee", "budget_freight",
+                    "budget_air_pollution_fee", "budget_other"
+                )
+            )
+            budget_unfinished = budget_contract + budget_outside
             budget_tax = budget_contract * 0.05
             budget_total = budget_contract + budget_tax
             award_total = self.safe_amount(self.basic_vars.get("award_contract_total", tk.StringVar()).get())
             award_net = award_total / 1.05 if award_total else 0
             award_tax = award_total - award_net if award_total else 0
+            award_outside = sum(
+                self.safe_amount(self.basic_vars.get(key, tk.StringVar()).get())
+                for key in (
+                    "award_mgmt_fee", "award_self_labor", "award_self_material", "award_spare_material",
+                    "award_railway_material", "award_supervision_fee", "award_freight",
+                    "award_air_pollution_fee", "award_other"
+                )
+            )
+            award_unfinished = award_net + award_outside
             award_base = self.safe_amount(self.basic_vars.get("award_base_price", tk.StringVar()).get())
             perf_rate = self.safe_amount(self.basic_vars.get("performance_bond_rate", tk.StringVar()).get()) / 100
             warranty_rate = self.safe_amount(self.basic_vars.get("warranty_rate", tk.StringVar()).get()) / 100
@@ -2913,11 +2931,13 @@ class App(tk.Tk):
                 "budget_contract_tax": budget_tax,
                 "budget_contract_total": budget_total,
                 "budget_input_tax": budget_tax,
-                "budget_total_amount": self.safe_amount(self.basic_vars.get("budget_unfinished_amount", tk.StringVar()).get()) + budget_tax,
+                "budget_unfinished_amount": budget_unfinished,
+                "budget_total_amount": budget_unfinished + budget_tax,
                 "award_contract_amount": award_net,
                 "award_contract_tax": award_tax,
                 "award_input_tax": award_tax,
-                "award_total_amount": self.safe_amount(self.basic_vars.get("award_unfinished_amount", tk.StringVar()).get()) + award_tax,
+                "award_unfinished_amount": award_unfinished,
+                "award_total_amount": award_unfinished + award_tax,
                 "contract_budget_net": budget_contract,
                 "contract_budget_tax": budget_tax,
                 "contract_budget_total": budget_total,
@@ -3146,16 +3166,16 @@ class App(tk.Tk):
             "labor_budget": "包工費-預算", "labor_award": "包工費-決標",
             "deposit_difference": "差額保證金", "deposit_performance": "履約保證金", "deposit_total": "保證金總額",
             "final_contract_amount": "竣工發包工程費", "warranty_rate": "保固金比例", "warranty_deposit": "保固保證金",
-            "budget_total_amount": "預算內容-總預算", "budget_unfinished_amount": "預算內容-未完工程",
-            "budget_input_tax": "預算內容-進項稅額", "budget_contract_amount": "預算發包工程費-預算金額",
+            "budget_total_amount": "總工程預算-總預算", "budget_unfinished_amount": "總工程預算-未完工程",
+            "budget_input_tax": "總工程預算-進項稅額", "budget_contract_amount": "預算發包工程費-預算金額",
             "budget_contract_tax": "預算發包工程費-稅金", "budget_contract_total": "預算發包工程費-預算總計(含稅)",
             "budget_labor": "預算包工費-預算", "budget_mgmt_fee": "預算發包以外-工程管理費",
             "budget_self_labor": "預算發包以外-自辦工費", "budget_self_material": "預算發包以外-自購材料費",
             "budget_spare_material": "預算發包以外-路備材料費", "budget_railway_material": "預算發包以外-路購材料費",
             "budget_supervision_fee": "預算發包以外-監理費", "budget_freight": "預算發包以外-運雜費",
             "budget_air_pollution_fee": "預算發包以外-空汙費", "budget_other": "預算發包以外-其他",
-            "award_total_amount": "決標內容-總預算", "award_unfinished_amount": "決標內容-未完工程",
-            "award_input_tax": "決標內容-進項稅額", "award_contract_amount": "決標發包工程費-發包契約金額",
+            "award_total_amount": "總工程費用-總預算", "award_unfinished_amount": "總工程費用-未完工程",
+            "award_input_tax": "總工程費用-進項稅額", "award_contract_amount": "決標發包工程費-發包契約金額",
             "award_contract_tax": "決標發包工程費-營業稅", "award_contract_total": "決標發包工程費-決標金額",
             "award_base_price": "決標發包工程費-底價", "award_contract_budget_ratio": "決標/預算",
             "award_contract_base_ratio": "決標/底價", "award_base_budget_ratio": "底價/預算",
@@ -3249,16 +3269,16 @@ class App(tk.Tk):
             "預定驗收日": "planned_acceptance_date", "實際驗收日": "actual_acceptance_date",
             "決算日": "settlement_date", "保固年限": "warranty_years", "保固結束日": "warranty_end_date",
             "保固備註": "warranty_note", "履保金比例": "performance_bond_rate",
-            "預算內容-總預算": "budget_total_amount", "預算內容-未完工程": "budget_unfinished_amount",
-            "預算內容-進項稅額": "budget_input_tax", "預算發包工程費-預算金額": "budget_contract_amount",
+            "總工程預算-總預算": "budget_total_amount", "總工程預算-未完工程": "budget_unfinished_amount",
+            "總工程預算-進項稅額": "budget_input_tax", "預算發包工程費-預算金額": "budget_contract_amount",
             "預算發包工程費-稅金": "budget_contract_tax", "預算發包工程費-預算總計(含稅)": "budget_contract_total",
             "預算包工費-預算": "budget_labor", "預算發包以外-工程管理費": "budget_mgmt_fee",
             "預算發包以外-自辦工費": "budget_self_labor", "預算發包以外-自購材料費": "budget_self_material",
             "預算發包以外-路備材料費": "budget_spare_material", "預算發包以外-路購材料費": "budget_railway_material",
             "預算發包以外-監理費": "budget_supervision_fee", "預算發包以外-運雜費": "budget_freight",
             "預算發包以外-空汙費": "budget_air_pollution_fee", "預算發包以外-其他": "budget_other",
-            "決標內容-總預算": "award_total_amount", "決標內容-未完工程": "award_unfinished_amount",
-            "決標內容-進項稅額": "award_input_tax", "決標發包工程費-發包契約金額": "award_contract_amount",
+            "總工程費用-總預算": "award_total_amount", "總工程費用-未完工程": "award_unfinished_amount",
+            "總工程費用-進項稅額": "award_input_tax", "決標發包工程費-發包契約金額": "award_contract_amount",
             "決標發包工程費-營業稅": "award_contract_tax", "決標發包工程費-決標金額": "award_contract_total",
             "決標發包工程費-底價": "award_base_price", "決標/預算": "award_contract_budget_ratio",
             "決標/底價": "award_contract_base_ratio", "底價/預算": "award_base_budget_ratio",
@@ -3267,6 +3287,12 @@ class App(tk.Tk):
             "決標發包以外-路備材料費": "award_spare_material", "決標發包以外-路購材料費": "award_railway_material",
             "決標發包以外-監理費": "award_supervision_fee", "決標發包以外-運雜費": "award_freight",
             "決標發包以外-空汙費": "award_air_pollution_fee", "決標發包以外-其他": "award_other",
+        })
+        label_to_key.update({
+            "預算內容-總預算": "budget_total_amount", "預算內容-未完工程": "budget_unfinished_amount",
+            "預算內容-進項稅額": "budget_input_tax",
+            "決標內容-總預算": "award_total_amount", "決標內容-未完工程": "award_unfinished_amount",
+            "決標內容-進項稅額": "award_input_tax",
         })
         for row in rows:
             if len(row) < 2:
