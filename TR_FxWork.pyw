@@ -1,12 +1,12 @@
 ﻿# -*- coding: utf-8 -*-
 """
-KAGAMI 臺鐵工程本本 V0.1.10
+KAGAMI 臺鐵工程本本 V0.2.0
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
 - 開啟時自動載入上次編輯工程
 - 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、工程執行紀錄表
-- V0.1.10：調整總工程預算與總工程費用未完工程自動加總。
+- V0.2.0：施工日曆累計到契約工期，新增預算資料分頁。
 """
 
 import os
@@ -24,8 +24,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_VERSION = "V0.1.10"
-APP_RELEASE_SUMMARY = "調整總工程預算與總工程費用未完工程自動加總。"
+APP_VERSION = "V0.2.0"
+APP_RELEASE_SUMMARY = "施工日曆累計到契約工期，新增預算資料分頁。"
 APP_TITLE = f"KAGAMI 臺鐵工程本本 {APP_VERSION}"
 
 
@@ -688,6 +688,7 @@ class EditableTree(ttk.Frame):
         self.on_changed = on_changed
         self.can_edit = can_edit or (lambda: True)
         self.add_command = add_command or self.add_row
+        self.sort_descending = {}
         self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12, style="Grid.Treeview")
         vs = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         hs = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
@@ -847,10 +848,29 @@ class EditableTree(ttk.Frame):
             self.on_changed()
 
     def sort_by_column(self, col):
-        rows = [(self.tree.set(item, col), item) for item in self.tree.get_children("")]
-        rows.sort(key=lambda x: x[0])
-        for index, (_, item) in enumerate(rows):
+        reverse = self.sort_descending.get(col, False)
+        dated_cols = {"day", "online_date", "open_date", "award_date", "start_date", "deadline_date", "received_date"}
+        valid_rows = []
+        blank_rows = []
+        for item in self.tree.get_children(""):
+            raw_value = self.tree.set(item, col)
+            if col in dated_cols:
+                parsed = parse_date(raw_value)
+                if parsed:
+                    valid_rows.append((parsed, item))
+                else:
+                    blank_rows.append(((raw_value or "").strip(), item))
+            else:
+                text = (raw_value or "").strip()
+                try:
+                    key = (0, float(text.replace(",", "").replace("元", "")))
+                except ValueError:
+                    key = (1, text.lower())
+                valid_rows.append((key, item))
+        valid_rows.sort(key=lambda x: x[0], reverse=reverse)
+        for index, (_, item) in enumerate(valid_rows + blank_rows):
             self.tree.move(item, "", index)
+        self.sort_descending[col] = not reverse
         self.changed()
 
 
@@ -909,6 +929,9 @@ class App(tk.Tk):
         ttk.Label(top_select, textvariable=self.lock_state_var, foreground="#a64d00").pack(side="left", padx=3)
 
         ttk.Button(top_select, text="▶", width=3, command=self.toggle_function_panel).pack(side="right", padx=(6, 0))
+        self.summary_visible = True
+        self.summary_toggle_btn = ttk.Button(top_select, text="▲", width=3, command=self.toggle_summary_area)
+        self.summary_toggle_btn.pack(side="right", padx=(6, 0))
         self.status_var = tk.StringVar(value="")
         ttk.Label(top_select, textvariable=self.status_var).pack(side="right")
         self.function_panel = None
@@ -941,26 +964,48 @@ class App(tk.Tk):
         self.nb.pack(fill="both", expand=True, padx=8, pady=8)
 
         self.tab_basic = ttk.Frame(self.nb, padding=8)
-        self.tab_holiday = ttk.Frame(self.nb, padding=8)
-        self.tab_weather = ttk.Frame(self.nb, padding=8)
-        self.tab_railway = ttk.Frame(self.nb, padding=8)
+        self.tab_day_tables = ttk.Frame(self.nb, padding=8)
         self.tab_calendar = ttk.Frame(self.nb, padding=8)
         self.tab_payment_contract = ttk.Frame(self.nb, padding=8)
         self.tab_payment_other = ttk.Frame(self.nb, padding=8)
         self.tab_payment_admin = ttk.Frame(self.nb, padding=8)
         self.tab_execution = ttk.Frame(self.nb, padding=8)
         self.tab_milestone = ttk.Frame(self.nb, padding=8)
+        self.tab_budget_data = ttk.Frame(self.nb, padding=8)
+
+        day_split = tk.PanedWindow(self.tab_day_tables, orient=tk.VERTICAL, sashwidth=8, sashrelief="raised", bg="#d9d9d9")
+        day_split.grid(row=0, column=0, sticky="nsew")
+        self.tab_day_tables.grid_rowconfigure(0, weight=1)
+        self.tab_day_tables.grid_columnconfigure(0, weight=1)
+        day_top = ttk.Frame(day_split, padding=(0, 0, 0, 6))
+        day_bottom = ttk.Frame(day_split, padding=(0, 6, 0, 0))
+        day_split.add(day_top)
+        day_split.add(day_bottom)
+
+        day_top.grid_rowconfigure(0, weight=1)
+        for i in range(3):
+            day_top.grid_columnconfigure(i, weight=1, uniform="day_top")
+        day_bottom.grid_rowconfigure(0, weight=1)
+        day_bottom.grid_columnconfigure(0, weight=1)
+
+        self.tab_holiday = ttk.LabelFrame(day_top, text="假期表", padding=8)
+        self.tab_workday = ttk.LabelFrame(day_top, text="補班日表", padding=8)
+        self.tab_railway = ttk.LabelFrame(day_top, text="鐵路疏運表", padding=8)
+        self.tab_weather = ttk.LabelFrame(day_bottom, text="晴雨表", padding=8)
+        self.tab_holiday.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self.tab_workday.grid(row=0, column=1, sticky="nsew", padx=4)
+        self.tab_railway.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
+        self.tab_weather.grid(row=0, column=0, sticky="nsew")
 
         self.nb.add(self.tab_basic, text="工程基本資料")
-        self.nb.add(self.tab_holiday, text="假期表")
-        self.nb.add(self.tab_weather, text="晴雨表")
-        self.nb.add(self.tab_railway, text="鐵路疏運表")
+        self.nb.add(self.tab_day_tables, text="假期/晴雨/疏運表")
         self.nb.add(self.tab_calendar, text="施工日曆")
         self.nb.add(self.tab_payment_contract, text="發包工程費計價")
         self.nb.add(self.tab_payment_other, text="發包以外計價")
         self.nb.add(self.tab_payment_admin, text="管理費計價")
         self.nb.add(self.tab_execution, text="工程執行紀錄表")
         self.nb.add(self.tab_milestone, text="工程大事記")
+        self.nb.add(self.tab_budget_data, text="預算資料")
 
         self.build_basic_tab()
         self.build_holiday_tab()
@@ -970,7 +1015,18 @@ class App(tk.Tk):
         self.build_payment_tabs()
         self.build_execution_tab()
         self.build_milestone_tab()
+        self.build_budget_data_tab()
         self.assign_tree_edit_guards()
+
+    def toggle_summary_area(self):
+        if self.summary_visible:
+            self.summary.pack_forget()
+            self.summary_visible = False
+            self.summary_toggle_btn.configure(text="▼")
+        else:
+            self.summary.pack(fill="x", padx=8, pady=(0, 8), before=self.nb)
+            self.summary_visible = True
+            self.summary_toggle_btn.configure(text="▲")
 
     def can_edit(self):
         manual_var = getattr(self, "data_edit_enabled_var", None)
@@ -1583,19 +1639,12 @@ class App(tk.Tk):
         self.add_page_edit_toggle(self.tab_holiday)
         toolbar = ttk.Frame(self.tab_holiday)
         toolbar.pack(fill="x", pady=(0, 6))
-        ttk.Label(toolbar, text="假期表與補班日表：按「新增一列」用日曆新增。").pack(side="left")
+        ttk.Label(toolbar, text="假期表：按「新增一列」用日曆新增。").pack(side="left")
         ttk.Button(toolbar, text="複製前一年度假期", command=self.copy_previous_year_holidays).pack(side="right", padx=4)
         ttk.Button(toolbar, text="確認假期", command=self.confirm_holidays).pack(side="right", padx=4)
 
-        tables = ttk.Frame(self.tab_holiday)
-        tables.pack(fill="both", expand=True)
-        left = ttk.LabelFrame(tables, text="假期表", padding=6)
-        left.pack(side="left", fill="both", expand=True, padx=(0, 4))
-        right = ttk.LabelFrame(tables, text="補班日表", padding=6)
-        right.pack(side="left", fill="both", expand=True, padx=(4, 0))
-
         self.holiday_tree = EditableTree(
-            left,
+            self.tab_holiday,
             ["exclude", "day", "name"],
             ["排除", "日期", "假日名稱"],
             [45, 160, 160],
@@ -1603,8 +1652,13 @@ class App(tk.Tk):
             add_command=self.open_holiday_calendar_dialog
         )
         self.holiday_tree.pack(fill="both", expand=True, pady=6)
+
+        self.add_page_edit_toggle(self.tab_workday)
+        workday_toolbar = ttk.Frame(self.tab_workday)
+        workday_toolbar.pack(fill="x", pady=(0, 6))
+        ttk.Label(workday_toolbar, text="補班日表：按「新增一列」用日曆新增。").pack(side="left")
         self.workday_tree = EditableTree(
-            right,
+            self.tab_workday,
             ["exclude", "day", "name"],
             ["排除", "日期", "補班名稱"],
             [45, 160, 160],
@@ -2436,6 +2490,45 @@ class App(tk.Tk):
 
         ttk.Button(win, text="新增", command=ok).pack(side="right", padx=10, pady=10)
         ttk.Button(win, text="取消", command=win.destroy).pack(side="right", pady=10)
+
+    def build_budget_data_tab(self):
+        self.add_page_edit_toggle(self.tab_budget_data)
+        container = ttk.Frame(self.tab_budget_data)
+        container.pack(fill="both", expand=True)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1, uniform="budget_data")
+        container.grid_columnconfigure(1, weight=1, uniform="budget_data")
+
+        budget_box = tk.LabelFrame(
+            container,
+            text="預算",
+            bg="#d9eaf7",
+            fg="#000000",
+            bd=2,
+            relief="solid",
+            labelanchor="n",
+            font=("Microsoft JhengHei UI", 12, "bold"),
+            padx=10,
+            pady=10,
+        )
+        contract_box = tk.LabelFrame(
+            container,
+            text="契約",
+            bg="#d9ead3",
+            fg="#000000",
+            bd=2,
+            relief="solid",
+            labelanchor="n",
+            font=("Microsoft JhengHei UI", 12, "bold"),
+            padx=10,
+            pady=10,
+        )
+        budget_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=6)
+        contract_box.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=6)
+        for box in (budget_box, contract_box):
+            box.grid_rowconfigure(0, weight=1)
+            box.grid_columnconfigure(0, weight=1)
+            tk.Frame(box, bg=box.cget("bg")).grid(row=0, column=0, sticky="nsew")
 
     def build_status_tab(self):
         box = ttk.LabelFrame(self.tab_status, text="工程執行狀態", padding=12)
@@ -3595,9 +3688,26 @@ class App(tk.Tk):
             or parse_date(self.basic_vars["planned_finish_holiday"].get())
             or parse_date(self.basic_vars["actual_finish"].get())
         )
+        try:
+            target_work_days = float(self.basic_vars["contract_days"].get() or 0)
+        except ValueError:
+            target_work_days = 0.0
 
         def day_increment(d):
             return self.daily_work_increment(d, holiday_dates, railway, workdays, weather_rows)
+
+        if start_count_date and target_work_days > 0:
+            cur = start_count_date
+            total = 0.0
+            target_finish_date = None
+            for _ in range(20000):
+                total += day_increment(cur)
+                if total >= target_work_days:
+                    target_finish_date = cur
+                    break
+                cur += timedelta(days=1)
+            if target_finish_date and (not finish_count_date or target_finish_date > finish_count_date):
+                finish_count_date = target_finish_date
 
         if start_count_date:
             cur = start_count_date
@@ -3609,8 +3719,9 @@ class App(tk.Tk):
         for wi, week in enumerate(weeks):
             y0 = top_h + weekday_h + wi * week_h
             for ri, label in enumerate(row_labels):
-                c.create_rectangle(5, y0 + ri*row_h, left_w, y0 + (ri+1)*row_h, fill="#f2f2f2", outline=colors["grid"])
-                c.create_text(left_w - 6, y0 + ri*row_h + row_h/2, text=label, anchor="e", font=("Microsoft JhengHei UI", label_font_size))
+                label_y = y0 + (ri + 1) * row_h
+                c.create_rectangle(5, label_y, left_w, label_y + row_h, fill="#f2f2f2", outline=colors["grid"])
+                c.create_text(left_w - 6, label_y + row_h/2, text=label, anchor="e", font=("Microsoft JhengHei UI", label_font_size))
 
             for di, d in enumerate(week):
                 x0 = left_w + di * cell_w
@@ -3657,7 +3768,8 @@ class App(tk.Tk):
                 )
                 if in_contract_period:
                     work_count += day_increment(d)
-                    txt = f"{work_count:g}" if work_count else ""
+                    display_count = min(work_count, target_work_days) if target_work_days > 0 else work_count
+                    txt = f"{display_count:g}" if display_count else ""
                 else:
                     txt = ""
                 c.create_rectangle(x0, y0+4*row_h, x0+cell_w, y0+5*row_h, fill="#ffffff", outline=colors["grid"])
