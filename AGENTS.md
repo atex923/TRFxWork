@@ -17,7 +17,8 @@
 ## 歷史區規則
 
 - 工作區只保留最新版號程式檔，例如 `TR_FxWork_V0_3_3_2.py` 與 `TR_FxWork_V0_3_3_2.pyw`。
-- 舊版程式檔不留在工作區，改版前先建立 Git tag 保存舊版，例如 `v0.1.7`。
+- 舊版號程式檔集中存放在 `history/old_versions/`，並由 Git commit 與 tag 保存。
+- 改版前先建立 Git tag 保存舊版，例如 `v0.1.7`。
 - README 主頁、啟動檔、主程式常數永遠指向最新版。
 - 每次改版都要在主程式 `APP_RELEASE_SUMMARY` 與 `HISTORY.md` 新增摘要。
 - 第一碼或第二碼進版時，將上一個大版/小版的第三碼摘要濃縮成大版摘要。
