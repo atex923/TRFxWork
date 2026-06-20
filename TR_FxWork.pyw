@@ -1,12 +1,21 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-KAGAMI 臺鐵工程本本 V0.2.5
+KAGAMI 臺鐵工程本本 V0.3.3.2
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
 - 開啟時自動載入上次編輯工程
 - 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、工程執行紀錄表
-- V0.2.5：放寬第二分頁前三表日期與名稱欄寬。
+- V0.2.6.3：第一分頁保證金新增履約保證金手動修改與保證金型式欄位。
+- V0.2.6.7：加寬第一分頁預算/契約金額區塊指定金額欄位，可輸入十億元。
+- V0.3.0：改黑白高對比配色，新增選擇/新增資料庫與預設資料庫來源記憶。
+- V0.3.1：視窗底色改淺灰，新增資料庫備份按鈕與檔名規則，第一分頁欄位自適應，第三分頁日期底色調整。
+- V0.3.2：第四分頁發包工程費計價欄位重整，新增日期選擇、累計計算與金額小數格式。
+- V0.3.2.1：第四分頁固定第一欄、金額右對齊、累計依期數計算、日期欄移到瀏覽區最後。
+- V0.3.2.2：修正第四分頁點擊空白區死當，點選資料列時整行淺灰底色識別。
+- V0.3.3：摘要金額來源調整、第五/第六分頁計價欄位重整、第一分頁新增變更後契約金額。
+- V0.3.3.1：修正第五/第六分頁既有資料編輯，並新增第六分頁累計稅金。
+- V0.3.3.2：第六分頁可支用額度超額提示改為可支用金額紅字加粗。
 """
 
 import os
@@ -18,6 +27,7 @@ import zipfile
 import calendar
 import re
 import sys
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
@@ -25,8 +35,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_VERSION = "V0.2.5"
-APP_RELEASE_SUMMARY = "放寬第二分頁前三表日期與名稱欄寬。"
+APP_VERSION = "V0.3.3.2"
+APP_RELEASE_SUMMARY = "第六分頁可支用額度超額提示改為可支用金額紅字加粗。"
 APP_TITLE = f"KAGAMI 臺鐵工程本本 {APP_VERSION}"
 
 
@@ -42,16 +52,80 @@ DB_FILE_NAME = "TRFxWork_db"
 LEGACY_DB_FILE_NAME = "TR_FxWork.db"
 DB_FILE = os.path.join(APP_DIR, DB_FILE_NAME)
 LEGACY_DB_FILE = os.path.join(APP_DIR, LEGACY_DB_FILE_NAME)
+APP_CONFIG_FILE = os.path.join(APP_DIR, "TRFxWork_config.json")
+
+
+def normalize_db_path(path):
+    if not path:
+        return ""
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def load_app_config():
+    try:
+        with open(APP_CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_app_config(data):
+    os.makedirs(APP_DIR, exist_ok=True)
+    tmp_path = APP_CONFIG_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, APP_CONFIG_FILE)
+
+
+def set_default_database_path(path):
+    cfg = load_app_config()
+    cfg["database_path"] = normalize_db_path(path)
+    cfg["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    save_app_config(cfg)
+
+
+def timestamp_suffix():
+    return datetime.now().strftime("%Y%m%d%H%M%S")
+
+
+def append_timestamp_suffix(path, prefix="_"):
+    """確保檔名主體最後帶有時間戳後綴。"""
+    folder, filename = os.path.split(normalize_db_path(path))
+    stem, ext = os.path.splitext(filename)
+    if re.search(r"_\d{14}$", stem):
+        return os.path.join(folder, filename)
+    return os.path.join(folder, f"{stem}{prefix}{timestamp_suffix()}{ext}")
 
 WEEKDAY_NAMES = ["一", "二", "三", "四", "五", "六", "日"]
 PASSWORD_SALT = "1981"
+
+# 黑白高對比 + 淺灰底色配色
+OSX_WINDOW_BG = "#eeeeee"
+OSX_PANEL_BG = "#f7f7f7"
+OSX_PANEL_ALT_BG = "#ffffff"
+OSX_BORDER = "#000000"
+OSX_TEXT = "#000000"
+OSX_MUTED_TEXT = "#333333"
+OSX_ACCENT = "#000000"
+OSX_ACCENT_HOVER = "#222222"
+OSX_SELECTION = "#d9d9d9"
+OSX_ENTRY_BG = "#ffffff"
+OSX_READONLY_BG = "#eeeeee"
+OSX_INPUT_BORDER = "#000000"
+OSX_BUDGET_BG = "#f7f7f7"
+OSX_AWARD_BG = "#ffffff"
+OSX_BUDGET_BOOK_BG = "#f7f7f7"
+OSX_CONTRACT_BOOK_BG = "#ffffff"
+OSX_WARNING = "#000000"
 
 PROJECT_EXTRA_FIELDS = [
     "contractor", "company_address", "responsible_person", "contact_person",
     "phone", "fax", "tax_id", "purchase_contract_no", "contract_date", "project_description",
     "contract_budget_net", "contract_award_net", "contract_budget_tax", "contract_award_tax",
     "contract_budget_total", "contract_award_total",
-    "labor_budget", "labor_award", "deposit_difference", "deposit_performance", "deposit_total",
+    "labor_budget", "labor_award", "deposit_difference", "deposit_performance", "deposit_performance_manual",
+    "performance_bond_type", "warranty_bond_type", "deposit_total",
     "final_contract_amount", "warranty_rate", "warranty_deposit",
     "planned_precheck_date", "actual_precheck_date", "planned_acceptance_date", "actual_acceptance_date",
     "settlement_date", "warranty_years", "warranty_end_date", "warranty_note", "performance_bond_rate",
@@ -68,6 +142,11 @@ PROJECT_EXTRA_FIELDS = [
     "award_mgmt_fee", "award_self_labor", "award_self_material", "award_spare_material",
     "award_railway_material", "award_supervision_fee", "award_freight", "award_air_pollution_fee",
     "award_other",
+    "admin_change_mgmt_fee",
+    "admin_alloc1_amount", "admin_alloc1_0c12", "admin_alloc1_0c11", "admin_alloc1_0c14",
+    "admin_alloc2_amount", "admin_alloc2_0c12", "admin_alloc2_0c11", "admin_alloc2_0c14",
+    "admin_alloc3_amount", "admin_alloc3_0c12", "admin_alloc3_0c11", "admin_alloc3_0c14",
+    "admin_alloc4_amount", "admin_alloc4_0c12", "admin_alloc4_0c11", "admin_alloc4_0c14",
 ]
 
 MONEY_FIELDS = {
@@ -84,8 +163,120 @@ MONEY_FIELDS = {
     "award_contract_amount", "award_contract_tax", "award_contract_total", "award_base_price",
     "award_labor", "award_mgmt_fee", "award_self_labor", "award_self_material", "award_spare_material",
     "award_railway_material", "award_supervision_fee", "award_freight", "award_air_pollution_fee",
-    "award_other",
+    "award_other", "admin_change_mgmt_fee",
+    "admin_alloc1_amount", "admin_alloc1_0c12", "admin_alloc1_0c11", "admin_alloc1_0c14",
+    "admin_alloc2_amount", "admin_alloc2_0c12", "admin_alloc2_0c11", "admin_alloc2_0c14",
+    "admin_alloc3_amount", "admin_alloc3_0c12", "admin_alloc3_0c11", "admin_alloc3_0c14",
+    "admin_alloc4_amount", "admin_alloc4_0c12", "admin_alloc4_0c11", "admin_alloc4_0c14",
 }
+
+
+PAYMENT_CONTRACT_FIELDS = [
+    "period_no", "estimated_amount_taxed", "billing_amount_untaxed",
+    "billing_business_tax", "paid_amount_untaxed", "paid_business_tax", "retention_amount",
+    "cumulative_billing_amount", "cumulative_billing_tax", "cumulative_retention_amount",
+    "cumulative_paid_amount", "cumulative_paid_tax", "progress_percent", "payment_period", "worked_days",
+    "contractor_submit_date", "supervision_submit_date", "owner_payment_date", "reimbursement_submit_date",
+]
+PAYMENT_CONTRACT_HEADINGS = [
+    "期數", "估驗金額(含稅)", "計價金額(未稅)", "計價營業稅", "實發金額(未稅)", "實發營業稅",
+    "保留款", "累計計價金額", "累計計價營業稅", "累計保留款", "累計實發金額",
+    "累計實發營業稅", "計價工程進度", "計價期間", "已工作日數",
+    "廠商提送日期", "監造提送日期", "主辦計價日期", "送件核銷日期",
+]
+PAYMENT_CONTRACT_WIDTHS = [
+    70, 145, 145, 130, 145, 130,
+    120, 150, 150, 140, 150,
+    150, 120, 180, 100,
+    120, 120, 120, 120,
+]
+PAYMENT_CONTRACT_DATE_FIELDS = {
+    "contractor_submit_date", "supervision_submit_date", "owner_payment_date", "reimbursement_submit_date"
+}
+PAYMENT_CONTRACT_MONEY_FIELDS = {
+    "estimated_amount_taxed", "billing_amount_untaxed", "billing_business_tax",
+    "paid_amount_untaxed", "paid_business_tax", "retention_amount",
+    "cumulative_billing_amount", "cumulative_billing_tax", "cumulative_retention_amount",
+    "cumulative_paid_amount", "cumulative_paid_tax",
+}
+PAYMENT_CONTRACT_CUMULATIVE_FIELDS = {
+    "cumulative_billing_amount", "cumulative_billing_tax", "cumulative_retention_amount",
+    "cumulative_paid_amount", "cumulative_paid_tax",
+}
+
+
+PAYMENT_OTHER_FIELDS = [
+    "period_no", "payment_date", "payment_item", "payment_amount", "cumulative_amount",
+    "management_fee_allocation", "cumulative_management_fee_allocation", "allocated_fee",
+    "travel_fee_0c12", "overtime_fee_0c11", "other_0c14",
+]
+PAYMENT_OTHER_HEADINGS = [
+    "期數", "計價日期", "計價項目", "計價金額", "累計金額",
+    "提撥管理費", "累計提撥管理費", "分攤後費用",
+    "0C12差費", "0C11加班費", "0C14其他",
+]
+PAYMENT_OTHER_WIDTHS = [80, 120, 140, 140, 140, 140, 160, 140, 130, 130, 130]
+PAYMENT_OTHER_DATE_FIELDS = {"payment_date"}
+PAYMENT_OTHER_LEFT_FIELDS = {"payment_item"}
+PAYMENT_OTHER_MONEY_FIELDS = {
+    "payment_amount", "cumulative_amount", "management_fee_allocation",
+    "cumulative_management_fee_allocation", "allocated_fee", "travel_fee_0c12",
+    "overtime_fee_0c11", "other_0c14",
+}
+PAYMENT_OTHER_CUMULATIVE_FIELDS = {"cumulative_amount", "cumulative_management_fee_allocation"}
+PAYMENT_OTHER_ITEM_OPTIONS = ["管理費", "差費", "延時工資"]
+
+PAYMENT_ADMIN_FIELDS = [
+    "period_no", "payment_date", "travel_fee_billing", "overtime_fee_billing", "other_fee_billing",
+    "tax_amount", "cumulative_tax_amount", "current_amount", "cumulative_amount",
+]
+PAYMENT_ADMIN_HEADINGS = [
+    "期數", "計價日期", "0C12差費計價", "0C11加班費計價", "0C14其他計價",
+    "稅金", "累計稅金", "本次計價金額", "累計金額",
+]
+PAYMENT_ADMIN_WIDTHS = [80, 120, 150, 150, 150, 120, 140, 150, 150]
+PAYMENT_ADMIN_DATE_FIELDS = {"payment_date"}
+PAYMENT_ADMIN_MONEY_FIELDS = {
+    "travel_fee_billing", "overtime_fee_billing", "other_fee_billing",
+    "tax_amount", "cumulative_tax_amount", "current_amount", "cumulative_amount",
+}
+PAYMENT_ADMIN_CUMULATIVE_FIELDS = {"cumulative_tax_amount", "current_amount", "cumulative_amount"}
+
+CHANGE_AWARD_FIELDS = [
+    "change_award_total_amount", "change_award_unfinished_amount", "change_award_input_tax",
+    "change_award_contract_total", "change_award_contract_amount", "change_award_contract_tax",
+    "change_award_base_price", "change_award_contract_budget_ratio", "change_award_contract_base_ratio", "change_award_base_budget_ratio",
+    "change_award_labor", "change_award_mgmt_fee", "change_award_self_labor", "change_award_self_material",
+    "change_award_spare_material", "change_award_railway_material", "change_award_supervision_fee",
+    "change_award_freight", "change_award_other", "change_award_air_pollution_fee",
+]
+CHANGE_AWARD_MONEY_FIELDS = {
+    "change_award_total_amount", "change_award_unfinished_amount", "change_award_input_tax",
+    "change_award_contract_total", "change_award_contract_amount", "change_award_contract_tax",
+    "change_award_base_price", "change_award_labor", "change_award_mgmt_fee", "change_award_self_labor",
+    "change_award_self_material", "change_award_spare_material", "change_award_railway_material",
+    "change_award_supervision_fee", "change_award_freight", "change_award_other", "change_award_air_pollution_fee",
+}
+
+
+def period_sort_key(period_text, original_index=0):
+    text = str(period_text or "").strip()
+    if not text:
+        return (2, original_index)
+    cleaned = text.replace("第", "").replace("期", "").strip()
+    try:
+        return (0, Decimal(cleaned), original_index)
+    except InvalidOperation:
+        parts = re.split(r"(\d+(?:\.\d+)?)", cleaned)
+        key = []
+        for part in parts:
+            if not part:
+                continue
+            try:
+                key.append((0, Decimal(part)))
+            except InvalidOperation:
+                key.append((1, part.lower()))
+        return (1, key, original_index)
 
 
 def today_str():
@@ -277,6 +468,12 @@ def count_work_days_until(start, end, exclude_dates):
 
 
 def resolve_database_path():
+    cfg = load_app_config()
+    configured = normalize_db_path(cfg.get("database_path", ""))
+    if configured:
+        folder = os.path.dirname(configured)
+        if os.path.exists(configured) or (folder and os.path.isdir(folder)):
+            return configured
     if os.path.exists(DB_FILE):
         return DB_FILE
     if os.path.exists(LEGACY_DB_FILE):
@@ -394,7 +591,26 @@ class DB:
             item TEXT,
             voucher_no TEXT,
             amount REAL DEFAULT 0,
-            note TEXT
+            note TEXT,
+            period_no TEXT DEFAULT '',
+            contractor_submit_date TEXT DEFAULT '',
+            supervision_submit_date TEXT DEFAULT '',
+            owner_payment_date TEXT DEFAULT '',
+            reimbursement_submit_date TEXT DEFAULT '',
+            estimated_amount_taxed TEXT DEFAULT '',
+            billing_amount_untaxed TEXT DEFAULT '',
+            billing_business_tax TEXT DEFAULT '',
+            paid_amount_untaxed TEXT DEFAULT '',
+            paid_business_tax TEXT DEFAULT '',
+            retention_amount TEXT DEFAULT '',
+            cumulative_billing_amount TEXT DEFAULT '',
+            cumulative_billing_tax TEXT DEFAULT '',
+            cumulative_retention_amount TEXT DEFAULT '',
+            cumulative_paid_amount TEXT DEFAULT '',
+            cumulative_paid_tax TEXT DEFAULT '',
+            progress_percent TEXT DEFAULT '',
+            payment_period TEXT DEFAULT '',
+            worked_days TEXT DEFAULT ''
         )
         """)
         c.execute("""
@@ -483,6 +699,21 @@ class DB:
         for field in PROJECT_EXTRA_FIELDS:
             try:
                 c.execute(f"ALTER TABLE projects ADD COLUMN {field} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+        for field in PAYMENT_CONTRACT_FIELDS:
+            try:
+                c.execute(f"ALTER TABLE payment_contract ADD COLUMN {field} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+        for field in PAYMENT_OTHER_FIELDS:
+            try:
+                c.execute(f"ALTER TABLE payment_other ADD COLUMN {field} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
+        for field in PAYMENT_ADMIN_FIELDS:
+            try:
+                c.execute(f"ALTER TABLE payment_admin ADD COLUMN {field} TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
         try:
@@ -736,12 +967,48 @@ class DB:
                         "INSERT OR REPLACE INTO railway_project_excludes(project_id, day, excluded) VALUES(?,?,1)",
                         (pid, day)
                     )
-        elif table in ("payment_contract", "payment_other", "payment_admin"):
+        elif table == "payment_contract":
+            cols = ["project_id", "day", "item", "voucher_no", "amount", "note"] + PAYMENT_CONTRACT_FIELDS
+            placeholders = ",".join("?" for _ in cols)
+            sql = f"INSERT INTO payment_contract({','.join(cols)}) VALUES({placeholders})"
             for r in rows:
-                self.conn.execute(
-                    f"INSERT INTO {table}(project_id, day, item, voucher_no, amount, note) VALUES(?,?,?,?,?,?)",
-                    (pid, r.get("day", ""), r.get("item", ""), r.get("voucher_no", ""), r.get("amount", 0), r.get("note", ""))
-                )
+                legacy_day = r.get("owner_payment_date") or r.get("contractor_submit_date", "")
+                legacy_item = r.get("period_no", "")
+                legacy_amount = r.get("estimated_amount_taxed") or r.get("paid_amount_untaxed") or 0
+                legacy_note = r.get("payment_period", "")
+                values = [pid, legacy_day, legacy_item, "", legacy_amount, legacy_note]
+                values.extend(r.get(field, "") for field in PAYMENT_CONTRACT_FIELDS)
+                self.conn.execute(sql, values)
+        elif table == "payment_other":
+            cols = ["project_id", "day", "item", "voucher_no", "amount", "note"] + PAYMENT_OTHER_FIELDS
+            placeholders = ",".join("?" for _ in cols)
+            sql = f"INSERT INTO payment_other({','.join(cols)}) VALUES({placeholders})"
+            for r in rows:
+                values = [
+                    pid,
+                    r.get("payment_date") or r.get("day", ""),
+                    r.get("payment_item") or r.get("item", ""),
+                    r.get("period_no", ""),
+                    r.get("payment_amount") or r.get("amount", 0),
+                    r.get("note", ""),
+                ]
+                values.extend(r.get(field, "") for field in PAYMENT_OTHER_FIELDS)
+                self.conn.execute(sql, values)
+        elif table == "payment_admin":
+            cols = ["project_id", "day", "item", "voucher_no", "amount", "note"] + PAYMENT_ADMIN_FIELDS
+            placeholders = ",".join("?" for _ in cols)
+            sql = f"INSERT INTO payment_admin({','.join(cols)}) VALUES({placeholders})"
+            for r in rows:
+                values = [
+                    pid,
+                    r.get("payment_date") or r.get("day", ""),
+                    r.get("period_no") or r.get("item", ""),
+                    r.get("period_no", ""),
+                    r.get("current_amount") or r.get("amount", 0),
+                    r.get("note", ""),
+                ]
+                values.extend(r.get(field, "") for field in PAYMENT_ADMIN_FIELDS)
+                self.conn.execute(sql, values)
         elif table == "execution_records":
             for r in rows:
                 self.conn.execute(
@@ -762,20 +1029,21 @@ class DB:
 
 
 class EditableTree(ttk.Frame):
-    def __init__(self, master, columns, headings, widths, on_changed=None, can_edit=None, add_command=None):
+    def __init__(self, master, columns, headings, widths, on_changed=None, can_edit=None, add_command=None, edit_command=None, height=12):
         super().__init__(master)
         self.columns = columns
         self.headings = headings
         self.on_changed = on_changed
         self.can_edit = can_edit or (lambda: True)
         self.add_command = add_command or self.add_row
+        self.edit_command = edit_command
         self.sort_descending = {}
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12, style="Grid.Treeview")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=height, style="Grid.Treeview")
         vs = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         hs = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
-        self.tree.tag_configure("pink", background="#f4cccc")
-        self.tree.tag_configure("red", foreground="#cc0000")
+        self.tree.tag_configure("pink", background="#e6e6e6")
+        self.tree.tag_configure("red", foreground="#000000")
         self.tree.tag_configure("year_sep", background="#000000", foreground="#ffffff")
 
         for col, head, width in zip(columns, headings, widths):
@@ -795,10 +1063,26 @@ class EditableTree(ttk.Frame):
         btns = ttk.Frame(self)
         btns.grid(row=2, column=0, columnspan=2, sticky="ew", pady=5)
         ttk.Button(btns, text="新增一列", command=self.add_command).pack(side="left", padx=3)
-        ttk.Button(btns, text="編輯選取列", command=self.edit_row).pack(side="left", padx=3)
+        ttk.Button(btns, text="編輯選取列", command=self.run_edit_command).pack(side="left", padx=3)
         ttk.Button(btns, text="刪除選取列", command=self.delete_row).pack(side="left", padx=3)
-        self.tree.bind("<Double-1>", lambda e: self.edit_row())
+        self.tree.bind("<Double-1>", self.run_edit_command)
         self.tree.bind("<Button-1>", self.on_tree_click)
+
+    def run_edit_command(self, event=None):
+        if event is not None:
+            row = self.tree.identify_row(event.y)
+            if row:
+                self.tree.selection_set(row)
+                self.tree.focus(row)
+            else:
+                return "break"
+        if not self.tree.focus():
+            selected = self.tree.selection()
+            if selected:
+                self.tree.focus(selected[0])
+        if self.edit_command:
+            return self.edit_command()
+        return self.edit_row()
 
     def on_tree_click(self, event):
         if not self.columns or self.columns[0] != "exclude":
@@ -826,7 +1110,10 @@ class EditableTree(ttk.Frame):
             messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
             return
         values = values or [""] * len(self.columns)
-        self.tree.insert("", "end", values=values)
+        item = self.tree.insert("", "end", values=values)
+        self.tree.selection_set(item)
+        self.tree.focus(item)
+        self.tree.see(item)
         self.changed()
 
     def add_row_after_selection(self, values=None):
@@ -930,7 +1217,7 @@ class EditableTree(ttk.Frame):
 
     def sort_by_column(self, col):
         reverse = self.sort_descending.get(col, False)
-        dated_cols = {"day", "online_date", "open_date", "award_date", "start_date", "deadline_date", "received_date"}
+        dated_cols = {"day", "online_date", "open_date", "award_date", "start_date", "deadline_date", "received_date", "contractor_submit_date", "supervision_submit_date", "owner_payment_date", "reimbursement_submit_date"}
         valid_rows = []
         blank_rows = []
         for item in self.tree.get_children(""):
@@ -955,6 +1242,281 @@ class EditableTree(ttk.Frame):
         self.changed()
 
 
+class FixedFirstColumnTree(ttk.Frame):
+    """第一欄固定、其餘欄位可橫向捲動的 Treeview 包裝元件。"""
+    def __init__(self, master, columns, headings, widths, on_changed=None, can_edit=None,
+                 add_command=None, edit_command=None, height=12, money_columns=None, date_columns=None):
+        super().__init__(master)
+        self.columns = list(columns)
+        self.headings = list(headings)
+        self.widths = list(widths)
+        self.on_changed = on_changed
+        self.can_edit = can_edit or (lambda: True)
+        self.add_command = add_command or self.add_row
+        self.edit_command = edit_command or self.edit_row
+        self.money_columns = set(money_columns or [])
+        self.date_columns = set(date_columns or [])
+        self.sort_descending = {}
+        self._syncing_selection = False
+        self._iid_counter = 0
+
+        self.fixed_column = self.columns[0]
+        self.scroll_columns = self.columns[1:]
+        fixed_heading = self.headings[0]
+        scroll_headings = self.headings[1:]
+        fixed_width = self.widths[0]
+        scroll_widths = self.widths[1:]
+
+        table = ttk.Frame(self)
+        table.grid(row=0, column=0, columnspan=2, sticky="nsew")
+        table.grid_rowconfigure(0, weight=1)
+        table.grid_columnconfigure(1, weight=1)
+
+        self.fixed_tree = ttk.Treeview(table, columns=[self.fixed_column], show="headings", height=height, style="Grid.Treeview")
+        self.tree = ttk.Treeview(table, columns=self.scroll_columns, show="headings", height=height, style="Grid.Treeview")
+        vs = ttk.Scrollbar(table, orient="vertical", command=self._yview)
+        hs = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        self.fixed_tree.configure(yscrollcommand=lambda *args: None)
+
+        self.fixed_tree.heading(self.fixed_column, text=fixed_heading, command=lambda c=self.fixed_column: self.sort_by_column(c))
+        self.fixed_tree.column(self.fixed_column, width=fixed_width, minwidth=fixed_width, anchor="center", stretch=False)
+        for col, head, width in zip(self.scroll_columns, scroll_headings, scroll_widths):
+            self.tree.heading(col, text=head, command=lambda c=col: self.sort_by_column(c))
+            anchor = "e" if col in self.money_columns else "center"
+            self.tree.column(col, width=width, minwidth=width, anchor=anchor, stretch=False)
+
+        self.fixed_tree.grid(row=0, column=0, sticky="ns")
+        self.tree.grid(row=0, column=1, sticky="nsew")
+        vs.grid(row=0, column=2, sticky="ns")
+        hs.grid(row=1, column=1, sticky="ew")
+
+        self.fixed_tree.tag_configure("gridline", background="#ffffff")
+        self.tree.tag_configure("gridline", background="#ffffff")
+        self.fixed_tree.tag_configure("selected_row", background="#e6e6e6", foreground="#000000")
+        self.tree.tag_configure("selected_row", background="#e6e6e6", foreground="#000000")
+        # 不使用 <<TreeviewSelect>> 雙向同步，避免兩個 Treeview 在空白區或重複選取時互相觸發事件。
+        # 改由 <Button-1> 明確判斷是否點到資料列，只有點到資料列才同步選取。
+        self.fixed_tree.bind("<Button-1>", lambda e: self._on_tree_click(e, self.fixed_tree, self.tree))
+        self.tree.bind("<Button-1>", lambda e: self._on_tree_click(e, self.tree, self.fixed_tree))
+        self.fixed_tree.bind("<Double-1>", lambda e: self.run_edit_command())
+        self.tree.bind("<Double-1>", lambda e: self.run_edit_command())
+        self.fixed_tree.bind("<MouseWheel>", self._on_mousewheel)
+        self.tree.bind("<MouseWheel>", self._on_mousewheel)
+
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        btns = ttk.Frame(self)
+        btns.grid(row=2, column=0, columnspan=2, sticky="ew", pady=5)
+        ttk.Button(btns, text="新增一列", command=self.add_command).pack(side="left", padx=3)
+        ttk.Button(btns, text="編輯選取列", command=self.run_edit_command).pack(side="left", padx=3)
+        ttk.Button(btns, text="刪除選取列", command=self.delete_row).pack(side="left", padx=3)
+
+    def _yview(self, *args):
+        self.fixed_tree.yview(*args)
+        self.tree.yview(*args)
+
+    def _on_mousewheel(self, event):
+        delta = -1 if event.delta > 0 else 1
+        self.fixed_tree.yview_scroll(delta, "units")
+        self.tree.yview_scroll(delta, "units")
+        return "break"
+
+    def _clear_visual_selection(self):
+        for item in self.fixed_tree.get_children(""):
+            self.fixed_tree.item(item, tags=("gridline",))
+        for item in self.tree.get_children(""):
+            self.tree.item(item, tags=("gridline",))
+
+    def _apply_visual_selection(self, item):
+        self._clear_visual_selection()
+        if item and self.fixed_tree.exists(item):
+            self.fixed_tree.item(item, tags=("selected_row",))
+        if item and self.tree.exists(item):
+            self.tree.item(item, tags=("selected_row",))
+
+    def _safe_select_item(self, item):
+        if not item or not self.fixed_tree.exists(item) or not self.tree.exists(item):
+            self._syncing_selection = True
+            try:
+                self.fixed_tree.selection_remove(self.fixed_tree.selection())
+                self.tree.selection_remove(self.tree.selection())
+                self.fixed_tree.focus("")
+                self.tree.focus("")
+                self._clear_visual_selection()
+            finally:
+                self._syncing_selection = False
+            return
+        self._syncing_selection = True
+        try:
+            self.fixed_tree.selection_set(item)
+            self.tree.selection_set(item)
+            self.fixed_tree.focus(item)
+            self.tree.focus(item)
+            self._apply_visual_selection(item)
+        finally:
+            self._syncing_selection = False
+
+    def _on_tree_click(self, event, source, target):
+        region = source.identify("region", event.x, event.y)
+        if region == "heading":
+            return None
+        item = source.identify_row(event.y)
+        if not item:
+            self._safe_select_item("")
+            return "break"
+        self._safe_select_item(item)
+        return "break"
+
+    def _sync_selection(self, source, target):
+        if self._syncing_selection:
+            return
+        self._syncing_selection = True
+        try:
+            selection = source.selection()
+            valid_selection = tuple(item for item in selection if source.exists(item) and target.exists(item))
+            if valid_selection:
+                target.selection_set(valid_selection)
+                target.focus(valid_selection[0])
+                self._apply_visual_selection(valid_selection[0])
+            else:
+                target.selection_remove(target.selection())
+                self._clear_visual_selection()
+        finally:
+            self._syncing_selection = False
+
+    def run_edit_command(self):
+        if self.edit_command:
+            return self.edit_command()
+
+    def focus(self):
+        item = self.tree.focus() or self.fixed_tree.focus()
+        if not item:
+            selected = self.tree.selection() or self.fixed_tree.selection()
+            item = selected[0] if selected else ""
+        return item
+
+    def selection(self):
+        return self.tree.selection() or self.fixed_tree.selection()
+
+    def add_row(self, values=None):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        self.insert_row(values or [""] * len(self.columns), select=True)
+        self.changed()
+
+    def edit_row(self):
+        return None
+
+    def insert_row(self, values, index="end", select=False):
+        values = (list(values) + [""] * len(self.columns))[:len(self.columns)]
+        self._iid_counter += 1
+        iid = f"row_{self._iid_counter}"
+        self.fixed_tree.insert("", index, iid=iid, values=[values[0]], tags=("gridline",))
+        self.tree.insert("", index, iid=iid, values=values[1:], tags=("gridline",))
+        if select:
+            self.fixed_tree.selection_set(iid)
+            self.tree.selection_set(iid)
+            self.fixed_tree.focus(iid)
+            self.tree.focus(iid)
+            self.fixed_tree.see(iid)
+            self.tree.see(iid)
+        return iid
+
+    def set_item_values(self, item, values):
+        if not item:
+            return
+        values = (list(values) + [""] * len(self.columns))[:len(self.columns)]
+        is_selected = item in self.selection()
+        row_tags = ("selected_row",) if is_selected else ("gridline",)
+        if self.fixed_tree.exists(item):
+            self.fixed_tree.item(item, values=[values[0]], tags=row_tags)
+        if self.tree.exists(item):
+            self.tree.item(item, values=values[1:], tags=row_tags)
+
+    def get_item_values(self, item):
+        if not item or not self.tree.exists(item):
+            return [""] * len(self.columns)
+        first = list(self.fixed_tree.item(item, "values")) if self.fixed_tree.exists(item) else [""]
+        rest = list(self.tree.item(item, "values"))
+        return (first + rest + [""] * len(self.columns))[:len(self.columns)]
+
+    def get_focused_values(self):
+        return self.get_item_values(self.focus())
+
+    def delete_row(self):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        for item in list(self.selection()):
+            if self.fixed_tree.exists(item):
+                self.fixed_tree.delete(item)
+            if self.tree.exists(item):
+                self.tree.delete(item)
+        self.changed()
+
+    def set_rows(self, rows):
+        self.fixed_tree.delete(*self.fixed_tree.get_children())
+        self.tree.delete(*self.tree.get_children())
+        self._iid_counter = 0
+        for row in rows:
+            self.insert_row(row, select=False)
+
+    def get_rows(self):
+        return [self.get_item_values(item) for item in self.tree.get_children()]
+
+    def apply_row_tags(self, tag_func):
+        for item in self.tree.get_children():
+            values = self.get_item_values(item)
+            tag = tag_func(values)
+            tags = (tag,) if tag else ()
+            self.fixed_tree.item(item, tags=tags)
+            self.tree.item(item, tags=tags)
+
+    def changed(self):
+        if self.on_changed:
+            self.on_changed()
+
+    def sort_by_column(self, col):
+        reverse = self.sort_descending.get(col, False)
+        indexes = {field: idx for idx, field in enumerate(self.columns)}
+        idx = indexes.get(col, 0)
+        rows = self.get_rows()
+
+        def natural_key(text):
+            text = (text or "").strip()
+            parts = re.split(r"(\d+(?:\.\d+)?)", text)
+            key = []
+            for part in parts:
+                if not part:
+                    continue
+                try:
+                    key.append((0, Decimal(part)))
+                except InvalidOperation:
+                    key.append((1, part.lower()))
+            return key or [(2, "")]
+
+        def key(row):
+            raw = row[idx] if idx < len(row) else ""
+            if col in self.date_columns:
+                parsed = parse_date(raw)
+                return (0, parsed.toordinal()) if parsed else (2, str(raw or ""))
+            if col in self.money_columns:
+                cleaned = str(raw or "").replace(",", "").replace("元", "").replace("%", "").strip()
+                try:
+                    return (0, Decimal(cleaned or "0"))
+                except InvalidOperation:
+                    return (2, cleaned)
+            return (1, natural_key(str(raw or "")))
+
+        rows.sort(key=key, reverse=reverse)
+        self.set_rows(rows)
+        self.sort_descending[col] = not reverse
+        self.changed()
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -963,7 +1525,9 @@ class App(tk.Tk):
         self.minsize(1100, 720)
         self.resizable(True, True)
 
-        self.db = DB(resolve_database_path())
+        self.database_path = resolve_database_path()
+        self.db = DB(self.database_path)
+        set_default_database_path(self.database_path)
         self.current_project_id = None
         self.loading = False
         self.dirty = False
@@ -978,22 +1542,162 @@ class App(tk.Tk):
         self.readonly_basic_keys = set()
         self.data_edit_enabled_var = tk.BooleanVar(value=True)
 
+        self.configure(bg=OSX_WINDOW_BG)
+        self.option_add("*Font", "{Microsoft JhengHei UI} 10")
         self.style = ttk.Style()
-        self.style.configure("Top.TLabelframe.Label", font=("Microsoft JhengHei UI", 11, "bold"))
-        self.style.configure("TLabel", font=("Microsoft JhengHei UI", 10))
-        self.style.configure("TButton", font=("Microsoft JhengHei UI", 10))
-        self.style.configure("Treeview", rowheight=26, font=("Microsoft JhengHei UI", 10))
-        self.style.configure("Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"))
-        self.style.configure("Grid.Treeview", rowheight=26, font=("Microsoft JhengHei UI", 10), borderwidth=1, relief="solid")
-        self.style.configure("Grid.Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"), borderwidth=1, relief="solid")
-        self.style.configure("DayTable.TLabelframe.Label", font=("Microsoft JhengHei UI", 14, "bold"))
-        self.style.map("TEntry", foreground=[("disabled", "#1f4e79")])
-        self.style.map("TCombobox", foreground=[("disabled", "#1f4e79")])
+        self.setup_osx_style()
 
         self.build_ui()
         self.load_projects()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(3000, self.auto_save_loop)
+
+    def setup_osx_style(self):
+        """套用黑白高對比 + 淺灰底色配色。"""
+        try:
+            self.style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        base_font = ("Microsoft JhengHei UI", 10)
+        bold_font = ("Microsoft JhengHei UI", 10, "bold")
+        title_font = ("Microsoft JhengHei UI", 11, "bold")
+
+        self.style.configure(".", background=OSX_WINDOW_BG, foreground=OSX_TEXT, font=base_font)
+        self.style.configure("TFrame", background=OSX_WINDOW_BG)
+        self.style.configure("TLabel", background=OSX_WINDOW_BG, foreground=OSX_TEXT, font=base_font)
+        self.style.configure("TCheckbutton", background=OSX_WINDOW_BG, foreground=OSX_TEXT, font=base_font)
+        self.style.configure("TRadiobutton", background=OSX_WINDOW_BG, foreground=OSX_TEXT, font=base_font)
+
+        self.style.configure(
+            "TButton",
+            background=OSX_PANEL_ALT_BG,
+            foreground=OSX_TEXT,
+            bordercolor=OSX_BORDER,
+            lightcolor=OSX_PANEL_BG,
+            darkcolor=OSX_BORDER,
+            focuscolor=OSX_ACCENT,
+            padding=(8, 4),
+            relief="flat",
+            font=base_font,
+        )
+        self.style.map(
+            "TButton",
+            background=[("pressed", "#000000"), ("active", "#e6e6e6"), ("disabled", OSX_PANEL_ALT_BG)],
+            foreground=[("pressed", "#ffffff"), ("disabled", OSX_MUTED_TEXT)],
+        )
+
+        self.style.configure(
+            "TEntry",
+            fieldbackground=OSX_ENTRY_BG,
+            background=OSX_ENTRY_BG,
+            foreground=OSX_TEXT,
+            bordercolor=OSX_BORDER,
+            lightcolor=OSX_ENTRY_BG,
+            darkcolor=OSX_BORDER,
+            insertcolor=OSX_TEXT,
+            padding=3,
+            relief="flat",
+        )
+        self.style.map(
+            "TEntry",
+            fieldbackground=[("readonly", OSX_READONLY_BG), ("disabled", OSX_PANEL_ALT_BG), ("!disabled", OSX_ENTRY_BG)],
+            foreground=[("disabled", OSX_TEXT), ("readonly", OSX_TEXT)],
+            bordercolor=[("focus", OSX_ACCENT), ("!focus", OSX_BORDER)],
+        )
+        self.style.configure(
+            "AdminAvailable.TEntry",
+            fieldbackground=OSX_READONLY_BG,
+            background=OSX_READONLY_BG,
+            foreground=OSX_TEXT,
+            font=base_font,
+            bordercolor=OSX_BORDER,
+            padding=3,
+            relief="flat",
+        )
+        self.style.map(
+            "AdminAvailable.TEntry",
+            fieldbackground=[("readonly", OSX_READONLY_BG), ("disabled", OSX_READONLY_BG), ("!disabled", OSX_READONLY_BG)],
+            foreground=[("readonly", OSX_TEXT), ("disabled", OSX_TEXT), ("!disabled", OSX_TEXT)],
+            bordercolor=[("focus", OSX_ACCENT), ("!focus", OSX_BORDER)],
+        )
+        self.style.configure(
+            "AdminAvailableWarning.TEntry",
+            fieldbackground=OSX_READONLY_BG,
+            background=OSX_READONLY_BG,
+            foreground="#c00000",
+            font=bold_font,
+            bordercolor=OSX_BORDER,
+            padding=3,
+            relief="flat",
+        )
+        self.style.map(
+            "AdminAvailableWarning.TEntry",
+            fieldbackground=[("readonly", OSX_READONLY_BG), ("disabled", OSX_READONLY_BG), ("!disabled", OSX_READONLY_BG)],
+            foreground=[("readonly", "#c00000"), ("disabled", "#c00000"), ("!disabled", "#c00000")],
+            bordercolor=[("focus", OSX_ACCENT), ("!focus", OSX_BORDER)],
+        )
+
+        self.style.configure(
+            "TCombobox",
+            fieldbackground=OSX_ENTRY_BG,
+            background=OSX_ENTRY_BG,
+            foreground=OSX_TEXT,
+            bordercolor=OSX_BORDER,
+            arrowcolor=OSX_MUTED_TEXT,
+            padding=3,
+        )
+        self.style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", OSX_READONLY_BG), ("disabled", OSX_PANEL_ALT_BG), ("!disabled", OSX_ENTRY_BG)],
+            foreground=[("disabled", OSX_TEXT), ("readonly", OSX_TEXT)],
+            bordercolor=[("focus", OSX_ACCENT), ("!focus", OSX_BORDER)],
+        )
+
+        self.style.configure("TLabelframe", background=OSX_PANEL_BG, bordercolor=OSX_BORDER, relief="solid")
+        self.style.configure("TLabelframe.Label", background=OSX_PANEL_BG, foreground=OSX_TEXT, font=title_font)
+        self.style.configure("Top.TLabelframe", background=OSX_PANEL_BG, bordercolor=OSX_BORDER, relief="solid")
+        self.style.configure("Top.TLabelframe.Label", background=OSX_PANEL_BG, foreground=OSX_TEXT, font=title_font)
+        self.style.configure("DayTable.TLabelframe", background=OSX_PANEL_BG, bordercolor=OSX_BORDER, relief="solid")
+        self.style.configure("DayTable.TLabelframe.Label", background=OSX_PANEL_BG, foreground=OSX_TEXT, font=("Microsoft JhengHei UI", 14, "bold"))
+
+        self.style.configure("TNotebook", background=OSX_WINDOW_BG, borderwidth=0, tabmargins=(4, 4, 4, 0))
+        self.style.configure(
+            "TNotebook.Tab",
+            background=OSX_PANEL_ALT_BG,
+            foreground=OSX_MUTED_TEXT,
+            padding=(14, 7),
+            bordercolor=OSX_BORDER,
+            font=base_font,
+        )
+        self.style.map(
+            "TNotebook.Tab",
+            background=[("selected", "#000000"), ("active", "#ffffff")],
+            foreground=[("selected", "#ffffff"), ("active", OSX_TEXT)],
+        )
+
+        self.style.configure(
+            "Treeview",
+            background=OSX_PANEL_BG,
+            fieldbackground=OSX_PANEL_BG,
+            foreground=OSX_TEXT,
+            rowheight=26,
+            bordercolor=OSX_BORDER,
+            relief="flat",
+            font=base_font,
+        )
+        self.style.configure(
+            "Treeview.Heading",
+            background="#ffffff",
+            foreground=OSX_TEXT,
+            bordercolor=OSX_BORDER,
+            relief="flat",
+            font=bold_font,
+        )
+        self.style.map("Treeview", background=[("selected", OSX_SELECTION)], foreground=[("selected", OSX_TEXT)])
+        self.style.configure("Grid.Treeview", background=OSX_PANEL_BG, fieldbackground=OSX_PANEL_BG, rowheight=26, font=base_font, borderwidth=1, relief="solid")
+        self.style.map("Grid.Treeview", background=[("selected", "#e6e6e6")], foreground=[("selected", "#000000")])
+        self.style.configure("Grid.Treeview.Heading", background="#ffffff", foreground=OSX_TEXT, font=bold_font, borderwidth=1, relief="solid")
 
     def build_ui(self):
         top_select = ttk.Frame(self, padding=8)
@@ -1009,7 +1713,7 @@ class App(tk.Tk):
 
         self.edit_password_var = tk.StringVar()
         self.lock_state_var = tk.StringVar(value="未鎖定")
-        ttk.Label(top_select, textvariable=self.lock_state_var, foreground="#a64d00").pack(side="left", padx=3)
+        ttk.Label(top_select, textvariable=self.lock_state_var, foreground=OSX_WARNING).pack(side="left", padx=3)
 
         ttk.Button(top_select, text="▶", width=3, command=self.toggle_function_panel).pack(side="right", padx=(6, 0))
         self.summary_visible = True
@@ -1018,6 +1722,16 @@ class App(tk.Tk):
         self.status_var = tk.StringVar(value="")
         ttk.Label(top_select, textvariable=self.status_var).pack(side="right")
         self.function_panel = None
+
+        db_bar = ttk.Frame(self, padding=(8, 0, 8, 6))
+        db_bar.pack(fill="x")
+        ttk.Button(db_bar, text="選擇資料庫", command=self.select_database).pack(side="left", padx=(0, 5))
+        ttk.Button(db_bar, text="新增資料庫", command=self.new_database).pack(side="left", padx=(0, 5))
+        ttk.Button(db_bar, text="備份資料庫", command=self.backup_database).pack(side="left", padx=(0, 8))
+        ttk.Label(db_bar, text="現在使用的資料庫：").pack(side="left")
+        self.database_path_var = tk.StringVar(value=self.database_path)
+        self.database_path_label = ttk.Label(db_bar, textvariable=self.database_path_var, foreground=OSX_TEXT)
+        self.database_path_label.pack(side="left", fill="x", expand=True)
 
         self.summary = ttk.LabelFrame(self, text="工程辦理情形摘要", padding=8, style="Top.TLabelframe")
         self.summary.pack(fill="x", padx=8, pady=(0, 8))
@@ -1028,9 +1742,9 @@ class App(tk.Tk):
             ("修正後預訂完工時間", "finish2"),
             ("已經過多少施工日數", "elapsed"),
             ("到今天日期是第幾工作日", "workday_no"),
-            ("發包總核銷金額", "contract_total"),
-            ("發包以外核銷總金額", "other_total"),
-            ("管理費總核銷金額", "admin_total"),
+            ("發包計價(未稅)", "contract_total"),
+            ("發包以外計價", "other_total"),
+            ("管理費計價(未稅)", "admin_total"),
             ("工程執行狀態", "execution_status"),
         ]
         for i, (text, key) in enumerate(labels):
@@ -1039,7 +1753,7 @@ class App(tk.Tk):
             ttk.Label(self.summary, text=text + "：").grid(row=row, column=col*2, sticky="e", padx=(5, 2), pady=3)
             v = tk.StringVar()
             self.summary_vars[key] = v
-            ttk.Label(self.summary, textvariable=v, foreground="#1f4e79", font=("Microsoft JhengHei UI", 11, "bold")).grid(
+            ttk.Label(self.summary, textvariable=v, foreground=OSX_ACCENT, font=("Microsoft JhengHei UI", 11, "bold")).grid(
                 row=row, column=col*2+1, sticky="w", padx=(0, 12), pady=3
             )
 
@@ -1230,11 +1944,26 @@ class App(tk.Tk):
         if self.dirty:
             self.save_current()
 
+    def money_decimal(self, value):
+        text = str(value or "").replace(",", "").replace("元", "").replace("%", "").strip()
+        if not text:
+            return Decimal("0")
+        try:
+            return Decimal(text)
+        except (InvalidOperation, ValueError):
+            try:
+                return Decimal(str(float(text)))
+            except (ValueError, InvalidOperation):
+                return Decimal("0")
+
     def format_money_value(self, value):
-        amount = self.safe_amount(value)
-        if amount == 0 and not str(value or "").strip().replace("元", "").replace(",", ""):
+        raw = str(value or "").strip().replace("元", "").replace(",", "")
+        if not raw:
             return ""
-        return f"{amount:,.0f}元"
+        amount = self.money_decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if amount == amount.to_integral_value():
+            return f"{int(amount):,}元"
+        return f"{amount:,.2f}元"
 
     def format_money_field(self, key):
         if key not in self.basic_vars or self.loading or self.restoring:
@@ -1388,8 +2117,8 @@ class App(tk.Tk):
 
     def multiline_entry(self, parent, row, col, label, key, height=3):
         ttk.Label(parent, text=label).grid(row=row, column=col, sticky="ne", padx=3, pady=2)
-        txt = tk.Text(parent, height=height, width=60, wrap="word", font=("Microsoft JhengHei UI", 10))
-        txt.configure(borderwidth=1, relief="solid", highlightthickness=1, highlightbackground="#888888")
+        txt = tk.Text(parent, height=height, width=40, wrap="word", font=("Microsoft JhengHei UI", 10))
+        txt.configure(borderwidth=1, relief="solid", highlightthickness=1, highlightbackground=OSX_BORDER, background=OSX_ENTRY_BG, foreground=OSX_TEXT, insertbackground=OSX_TEXT)
         txt.grid(row=row, column=col+1, columnspan=7, sticky="ew", padx=3, pady=2)
         txt.bind("<KeyRelease>", lambda e: self.mark_dirty())
         txt.bind("<FocusOut>", lambda e: self.mark_dirty())
@@ -1397,19 +2126,42 @@ class App(tk.Tk):
         setattr(self, key + "_text", txt)
         return txt
 
-    def money_section_title(self, parent, text, row, columnspan=4):
+    def money_section_title(self, parent, text, row, columnspan=6):
         bg = parent.cget("bg") if hasattr(parent, "cget") else None
         tk.Label(parent, text=text, anchor="center", bg=bg, font=("Microsoft JhengHei UI", 11, "bold")).grid(
             row=row, column=0, columnspan=columnspan, sticky="ew", padx=4, pady=(8, 4)
         )
 
-    def money_entry(self, parent, row, col, label, key, width=12, readonly=False):
+    def money_entry(self, parent, row, col, label, key, width=12, readonly=False, suffix="", copy_from=None):
         bg = parent.cget("bg") if hasattr(parent, "cget") else None
         tk.Label(parent, text=label, anchor="e", bg=bg).grid(row=row, column=col, sticky="e", padx=3, pady=2)
         var = tk.StringVar()
         var.trace_add("write", self.mark_dirty)
-        ent = ttk.Entry(parent, textvariable=var, width=width)
-        ent.grid(row=row, column=col + 1, sticky="ew", padx=3, pady=2)
+
+        holder = tk.Frame(parent, bg=bg)
+        holder.grid(row=row, column=col + 1, sticky="ew", padx=3, pady=2)
+        holder.grid_columnconfigure(0, weight=1)
+
+        # 第一分頁下半部：可輸入的金額欄位只保留黑色底線，不再使用四邊黑框。
+        if readonly:
+            ent = ttk.Entry(holder, textvariable=var, width=width)
+            ent.grid(row=0, column=0, sticky="ew")
+        else:
+            underline_holder = tk.Frame(holder, bg=bg)
+            underline_holder.grid(row=0, column=0, sticky="ew")
+            underline_holder.grid_columnconfigure(0, weight=1)
+            ent = ttk.Entry(underline_holder, textvariable=var, width=width)
+            ent.grid(row=0, column=0, sticky="ew")
+            bottom_line = tk.Frame(underline_holder, bg=OSX_INPUT_BORDER, height=2)
+            bottom_line.grid(row=1, column=0, sticky="ew", pady=(1, 0))
+            bottom_line.grid_propagate(False)
+
+        if suffix:
+            tk.Label(holder, text=suffix, anchor="w", bg=bg).grid(row=0, column=1, sticky="w", padx=(4, 0))
+        if copy_from:
+            btn = ttk.Button(holder, text="複製", width=5, command=lambda s=copy_from, t=key: self.copy_budget_value(s, t))
+            btn.grid(row=0, column=2, sticky="w", padx=(4, 0))
+            self.edit_widgets.append(btn)
         if readonly:
             ent.configure(state="readonly")
         self.edit_widgets.append(ent)
@@ -1429,12 +2181,8 @@ class App(tk.Tk):
             self.format_money_field(target_key)
             self.recalculate()
 
-    def award_money_entry(self, parent, row, col, label, key, source_key=None, width=12, readonly=False):
-        self.money_entry(parent, row, col, label, key, width, readonly)
-        if source_key:
-            ttk.Button(parent, text="複製", width=5, command=lambda s=source_key, t=key: self.copy_budget_value(s, t)).grid(
-                row=row, column=col + 2, sticky="w", padx=(0, 6), pady=2
-            )
+    def award_money_entry(self, parent, row, col, label, key, source_key=None, width=12, readonly=False, suffix=""):
+        self.money_entry(parent, row, col, label, key, width, readonly, suffix=suffix, copy_from=source_key)
 
     def build_money_sections(self, parent):
         wrap = ttk.Frame(parent)
@@ -1442,64 +2190,197 @@ class App(tk.Tk):
         wrap.grid_columnconfigure(0, weight=1)
         wrap.grid_columnconfigure(1, weight=1)
 
-        budget = tk.LabelFrame(wrap, text="預算金額", bg="#fce4d6", padx=8, pady=8, font=("Microsoft JhengHei UI", 11, "bold"))
-        award = tk.LabelFrame(wrap, text="契約金額", bg="#e2f0d9", padx=8, pady=8, font=("Microsoft JhengHei UI", 11, "bold"))
+        budget = tk.LabelFrame(wrap, text="預算金額", bg=OSX_BUDGET_BG, fg=OSX_TEXT, bd=1, relief="solid", padx=8, pady=8, font=("Microsoft JhengHei UI", 11, "bold"))
+        award = tk.LabelFrame(wrap, text="契約金額", bg=OSX_AWARD_BG, fg=OSX_TEXT, bd=1, relief="solid", padx=8, pady=8, font=("Microsoft JhengHei UI", 11, "bold"))
         budget.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         award.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         for frame in (budget, award):
             for idx in range(6):
-                frame.grid_columnconfigure(idx, weight=1)
+                # 一行三欄：每欄由「標籤 + 輸入框」組成。
+                frame.grid_columnconfigure(idx, weight=1 if idx % 2 else 0)
 
-        self.money_section_title(budget, "總工程預算", 0)
-        self.money_entry(budget, 1, 0, "總預算", "budget_total_amount", readonly=True)
-        self.money_entry(budget, 1, 2, "未完工程", "budget_unfinished_amount", readonly=True)
-        self.money_entry(budget, 2, 0, "進項稅額", "budget_input_tax", readonly=True)
-        self.money_section_title(budget, "發包工程費", 3)
-        self.money_entry(budget, 4, 0, "預算金額", "budget_contract_amount")
-        self.money_entry(budget, 4, 2, "稅金", "budget_contract_tax", readonly=True)
-        self.money_entry(budget, 5, 0, "預算總計(含稅)", "budget_contract_total", readonly=True)
-        self.money_section_title(budget, "包工費", 6)
-        self.money_entry(budget, 7, 0, "預算", "budget_labor")
-        self.money_section_title(budget, "發包以外", 8)
-        self.money_entry(budget, 9, 0, "工程管理費", "budget_mgmt_fee")
-        self.money_entry(budget, 9, 2, "自辦工費", "budget_self_labor")
-        self.money_entry(budget, 10, 0, "自購材料費", "budget_self_material")
-        self.money_entry(budget, 10, 2, "路備材料費", "budget_spare_material")
-        self.money_entry(budget, 11, 0, "路購材料費", "budget_railway_material")
-        self.money_entry(budget, 11, 2, "監理費", "budget_supervision_fee")
-        self.money_entry(budget, 12, 0, "運雜費", "budget_freight")
-        self.money_entry(budget, 12, 2, "空汙費", "budget_air_pollution_fee")
-        self.money_entry(budget, 13, 0, "其他", "budget_other")
+        # 總工程預算、發包工程費、包工費的金額欄位加寬，
+        # 可完整輸入/顯示十億元等級金額，例如 1,000,000,000.00元。
+        wide_money_width = 18
+
+        self.money_section_title(budget, "總工程預算", 0, columnspan=6)
+        self.money_entry(budget, 1, 0, "總預算", "budget_total_amount", width=wide_money_width, readonly=True, suffix="(含稅)")
+        self.money_entry(budget, 1, 2, "未完工程", "budget_unfinished_amount", width=wide_money_width, readonly=True)
+        self.money_entry(budget, 1, 4, "進項稅額", "budget_input_tax", width=wide_money_width, readonly=True)
+        self.money_section_title(budget, "發包工程費", 2, columnspan=6)
+        self.money_entry(budget, 3, 0, "預算總計", "budget_contract_total", width=wide_money_width, readonly=True, suffix="(含稅)")
+        self.money_entry(budget, 3, 2, "預算金額", "budget_contract_amount", width=wide_money_width)
+        self.money_entry(budget, 3, 4, "稅金", "budget_contract_tax", width=wide_money_width, readonly=True)
+        self.money_section_title(budget, "包工費", 4, columnspan=6)
+        self.money_entry(budget, 5, 0, "預算", "budget_labor", width=wide_money_width)
+        self.money_section_title(budget, "發包以外", 6, columnspan=6)
+        self.money_entry(budget, 7, 0, "工程管理費", "budget_mgmt_fee")
+        self.money_entry(budget, 7, 2, "自辦工費", "budget_self_labor")
+        self.money_entry(budget, 7, 4, "自購材料費", "budget_self_material")
+        self.money_entry(budget, 8, 0, "路備材料費", "budget_spare_material")
+        self.money_entry(budget, 8, 2, "路購材料費", "budget_railway_material")
+        self.money_entry(budget, 8, 4, "監理費", "budget_supervision_fee")
+        self.money_entry(budget, 9, 0, "運雜費", "budget_freight")
+        self.money_entry(budget, 9, 2, "其他", "budget_other")
+        self.money_entry(budget, 9, 4, "空汙費", "budget_air_pollution_fee")
 
         self.money_section_title(award, "總工程費用", 0, columnspan=6)
-        self.money_entry(award, 1, 0, "總預算", "award_total_amount", readonly=True)
-        self.money_entry(award, 1, 3, "未完工程", "award_unfinished_amount", readonly=True)
-        self.money_entry(award, 2, 0, "進項稅額", "award_input_tax", readonly=True)
-        self.money_section_title(award, "發包工程費", 3, columnspan=6)
-        self.money_entry(award, 4, 0, "發包契約金額", "award_contract_amount", readonly=True)
-        self.money_entry(award, 4, 3, "營業稅", "award_contract_tax", readonly=True)
-        self.money_entry(award, 5, 0, "決標金額", "award_contract_total")
-        self.money_entry(award, 5, 3, "底價", "award_base_price")
-        self.money_entry(award, 6, 0, "決標/預算=", "award_contract_budget_ratio", readonly=True)
-        self.money_entry(award, 6, 2, "決標/底價=", "award_contract_base_ratio", readonly=True)
-        self.money_entry(award, 7, 0, "底價/預算=", "award_base_budget_ratio", readonly=True)
-        self.money_section_title(award, "包工費", 8, columnspan=6)
-        self.money_entry(award, 9, 0, "發包", "award_labor")
-        self.money_section_title(award, "發包以外", 10, columnspan=6)
-        self.award_money_entry(award, 11, 0, "工程管理費", "award_mgmt_fee", "budget_mgmt_fee")
-        self.award_money_entry(award, 11, 3, "自辦工費", "award_self_labor", "budget_self_labor")
-        self.award_money_entry(award, 12, 0, "自購材料費", "award_self_material", "budget_self_material")
-        self.award_money_entry(award, 12, 3, "路備材料費", "award_spare_material", "budget_spare_material")
-        self.award_money_entry(award, 13, 0, "路購材料費", "award_railway_material", "budget_railway_material")
-        self.award_money_entry(award, 13, 3, "監理費", "award_supervision_fee", "budget_supervision_fee")
-        self.award_money_entry(award, 14, 0, "運雜費", "award_freight", "budget_freight")
-        self.award_money_entry(award, 14, 3, "空汙費", "award_air_pollution_fee", "budget_air_pollution_fee")
-        self.award_money_entry(award, 15, 0, "其他", "award_other", "budget_other")
+        self.money_entry(award, 1, 0, "總預算", "award_total_amount", width=wide_money_width, readonly=True, suffix="(含稅)")
+        self.money_entry(award, 1, 2, "未完工程", "award_unfinished_amount", width=wide_money_width, readonly=True)
+        self.money_entry(award, 1, 4, "進項稅額", "award_input_tax", width=wide_money_width, readonly=True)
+        self.money_section_title(award, "發包工程費", 2, columnspan=6)
+        self.money_entry(award, 3, 0, "契約金額總計", "award_contract_total", width=wide_money_width, readonly=True, suffix="(含稅)")
+        self.money_entry(award, 3, 2, "發包契約金額", "award_contract_amount", width=wide_money_width)
+        self.money_entry(award, 3, 4, "營業稅", "award_contract_tax", width=wide_money_width, readonly=True)
+        self.money_entry(award, 4, 0, "底價", "award_base_price", width=wide_money_width)
+        self.money_entry(award, 4, 2, "決標/預算=", "award_contract_budget_ratio", readonly=True)
+        self.money_entry(award, 4, 4, "決標/底價=", "award_contract_base_ratio", readonly=True)
+        self.money_entry(award, 5, 0, "底價/預算=", "award_base_budget_ratio", readonly=True)
+        self.money_section_title(award, "包工費", 6, columnspan=6)
+        self.money_entry(award, 7, 0, "發包", "award_labor", width=wide_money_width)
+        self.money_section_title(award, "發包以外", 8, columnspan=6)
+        self.award_money_entry(award, 9, 0, "工程管理費", "award_mgmt_fee", "budget_mgmt_fee")
+        self.award_money_entry(award, 9, 2, "自辦工費", "award_self_labor", "budget_self_labor")
+        self.award_money_entry(award, 9, 4, "自購材料費", "award_self_material", "budget_self_material")
+        self.award_money_entry(award, 10, 0, "路備材料費", "award_spare_material", "budget_spare_material")
+        self.award_money_entry(award, 10, 2, "路購材料費", "award_railway_material", "budget_railway_material")
+        self.award_money_entry(award, 10, 4, "監理費", "award_supervision_fee", "budget_supervision_fee")
+        self.award_money_entry(award, 11, 0, "運雜費", "award_freight", "budget_freight")
+        self.award_money_entry(award, 11, 2, "其他", "award_other", "budget_other")
+        self.award_money_entry(award, 11, 4, "空汙費", "award_air_pollution_fee", "budget_air_pollution_fee")
+
+        self.build_change_award_money_section(wrap, wide_money_width)
+
+    def build_change_award_money_section(self, wrap, wide_money_width):
+        change_box = tk.LabelFrame(wrap, text="變更後契約金額", bg=OSX_PANEL_BG, fg=OSX_TEXT, bd=1, relief="solid", padx=8, pady=8, font=("Microsoft JhengHei UI", 11, "bold"))
+        change_box.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        for idx in range(6):
+            change_box.grid_columnconfigure(idx, weight=1 if idx % 2 else 0)
+        self.change_award_vars = {}
+        self.change_award_widgets = {}
+        self.change_award_select_var = tk.StringVar()
+        header = tk.Frame(change_box, bg=OSX_PANEL_BG)
+        header.grid(row=0, column=0, columnspan=6, sticky="ew", pady=(0, 4))
+        tk.Label(header, text="第幾次變更：", bg=OSX_PANEL_BG, fg=OSX_TEXT).pack(side="left")
+        self.change_award_combo = ttk.Combobox(header, textvariable=self.change_award_select_var, state="readonly", width=12)
+        self.change_award_combo.pack(side="left", padx=(4, 8))
+        self.change_award_combo.bind("<<ComboboxSelected>>", lambda e: self.load_selected_change_award_fields())
+        ttk.Button(header, text="儲存此變更金額", command=self.save_current_change_award_fields).pack(side="left", padx=(4, 0))
+        self.change_award_section_title(change_box, "總工程費用", 1)
+        self.change_award_entry(change_box, 2, 0, "總預算", "change_award_total_amount", wide_money_width, True, "(含稅)")
+        self.change_award_entry(change_box, 2, 2, "未完工程", "change_award_unfinished_amount", wide_money_width, True)
+        self.change_award_entry(change_box, 2, 4, "進項稅額", "change_award_input_tax", wide_money_width, True)
+        self.change_award_section_title(change_box, "發包工程費", 3)
+        self.change_award_entry(change_box, 4, 0, "契約金額總計", "change_award_contract_total", wide_money_width, True, "(含稅)")
+        self.change_award_entry(change_box, 4, 2, "發包契約金額", "change_award_contract_amount", wide_money_width)
+        self.change_award_entry(change_box, 4, 4, "營業稅", "change_award_contract_tax", wide_money_width, True)
+        self.change_award_entry(change_box, 5, 0, "底價", "change_award_base_price", wide_money_width)
+        self.change_award_entry(change_box, 5, 2, "決標/預算=", "change_award_contract_budget_ratio", 12, True)
+        self.change_award_entry(change_box, 5, 4, "決標/底價=", "change_award_contract_base_ratio", 12, True)
+        self.change_award_entry(change_box, 6, 0, "底價/預算=", "change_award_base_budget_ratio", 12, True)
+        self.change_award_section_title(change_box, "包工費", 7)
+        self.change_award_entry(change_box, 8, 0, "發包", "change_award_labor", wide_money_width)
+        self.change_award_section_title(change_box, "發包以外", 9)
+        self.change_award_entry(change_box, 10, 0, "工程管理費", "change_award_mgmt_fee")
+        self.change_award_entry(change_box, 10, 2, "自辦工費", "change_award_self_labor")
+        self.change_award_entry(change_box, 10, 4, "自購材料費", "change_award_self_material")
+        self.change_award_entry(change_box, 11, 0, "路備材料費", "change_award_spare_material")
+        self.change_award_entry(change_box, 11, 2, "路購材料費", "change_award_railway_material")
+        self.change_award_entry(change_box, 11, 4, "監理費", "change_award_supervision_fee")
+        self.change_award_entry(change_box, 12, 0, "運雜費", "change_award_freight")
+        self.change_award_entry(change_box, 12, 2, "其他", "change_award_other")
+        self.change_award_entry(change_box, 12, 4, "空汙費", "change_award_air_pollution_fee")
+
+    def change_award_section_title(self, parent, text, row):
+        bg = parent.cget("bg")
+        tk.Label(parent, text=text, anchor="center", bg=bg, fg=OSX_TEXT, font=("Microsoft JhengHei UI", 11, "bold")).grid(row=row, column=0, columnspan=6, sticky="ew", padx=4, pady=(8, 4))
+
+    def change_award_entry(self, parent, row, col, label, key, width=12, readonly=False, suffix=""):
+        bg = parent.cget("bg")
+        tk.Label(parent, text=label, anchor="e", bg=bg, fg=OSX_TEXT).grid(row=row, column=col, sticky="e", padx=3, pady=2)
+        var = tk.StringVar()
+        var.trace_add("write", self.on_change_award_field_changed)
+        holder = tk.Frame(parent, bg=bg)
+        holder.grid(row=row, column=col + 1, sticky="ew", padx=3, pady=2)
+        holder.grid_columnconfigure(0, weight=1)
+        ent = ttk.Entry(holder, textvariable=var, width=width)
+        ent.grid(row=0, column=0, sticky="ew")
+        if suffix:
+            tk.Label(holder, text=suffix, anchor="w", bg=bg, fg=OSX_TEXT).grid(row=0, column=1, sticky="w", padx=(4, 0))
+        if readonly:
+            ent.configure(state="readonly")
+        elif key in CHANGE_AWARD_MONEY_FIELDS:
+            ent.bind("<FocusOut>", lambda e, k=key: self.format_change_award_money(k))
+            ent.bind("<Return>", lambda e, k=key: self.format_change_award_money(k))
+        self.change_award_vars[key] = var
+        self.change_award_widgets[key] = ent
+        self.edit_widgets.append(ent)
+        return ent
+
+    def performance_deposit_entry(self, parent, row, col):
+        """履約保證金欄位：可由比例自動計算，也可勾選後手動輸入。"""
+        ttk.Label(parent, text="履約保證金").grid(row=row, column=col, sticky="e", padx=3, pady=2)
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=col + 1, sticky="ew", padx=3, pady=2)
+        holder.grid_columnconfigure(0, weight=1)
+
+        var = tk.StringVar()
+        var.trace_add("write", self.mark_dirty)
+        ent = ttk.Entry(holder, textvariable=var, width=12)
+        ent.grid(row=0, column=0, sticky="ew")
+
+        manual_var = tk.StringVar(value="0")
+        manual_var.trace_add("write", self.on_deposit_performance_manual_changed)
+        chk = ttk.Checkbutton(holder, text="手動修改", variable=manual_var, onvalue="1", offvalue="0")
+        chk.grid(row=0, column=1, sticky="w", padx=(6, 0))
+
+        self.edit_widgets.append(ent)
+        self.edit_widgets.append(chk)
+        self.basic_vars["deposit_performance"] = var
+        self.basic_vars["deposit_performance_manual"] = manual_var
+        if hasattr(self, "basic_widgets"):
+            self.basic_widgets["deposit_performance"] = ent
+            self.basic_widgets["deposit_performance_manual"] = chk
+        ent.bind("<FocusOut>", lambda e: self.format_money_field("deposit_performance"))
+        ent.bind("<Return>", lambda e: self.format_money_field("deposit_performance"))
+        self.deposit_performance_entry_widget = ent
+        self.deposit_performance_manual_check = chk
+        self.update_deposit_performance_manual_state()
+        return ent
+
+    def on_deposit_performance_manual_changed(self, *_):
+        if self.loading or self.restoring:
+            self.update_deposit_performance_manual_state()
+            return
+        self.update_deposit_performance_manual_state()
+        self.mark_dirty()
+
+    def update_deposit_performance_manual_state(self):
+        ent = getattr(self, "deposit_performance_entry_widget", None)
+        if not ent:
+            return
+        manual = self.basic_vars.get("deposit_performance_manual", tk.StringVar(value="0")).get() == "1"
+        unlocked = self.can_edit()
+        try:
+            if not unlocked:
+                ent.configure(state="disabled")
+            elif manual:
+                ent.configure(state="normal")
+            else:
+                ent.configure(state="readonly")
+        except tk.TclError:
+            pass
+        chk = getattr(self, "deposit_performance_manual_check", None)
+        if chk:
+            try:
+                chk.configure(state="normal" if unlocked else "disabled")
+            except tk.TclError:
+                pass
 
     def build_basic_tab(self):
         self.basic_vars = {}
         self.basic_widgets = {}
-        canvas = tk.Canvas(self.tab_basic, highlightthickness=0)
+        canvas = tk.Canvas(self.tab_basic, highlightthickness=0, background=OSX_WINDOW_BG)
         vs = ttk.Scrollbar(self.tab_basic, orient="vertical", command=canvas.yview)
         hs = ttk.Scrollbar(self.tab_basic, orient="horizontal", command=canvas.xview)
         canvas.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
@@ -1511,14 +2392,17 @@ class App(tk.Tk):
         content = ttk.Frame(canvas)
         canvas_window = canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(canvas_window, width=max(e.width, content.winfo_reqwidth())))
+        # 第一分頁輸入區自動貼合目前視窗寬度，避免每行資料被擠到非視區外。
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(canvas_window, width=max(1, e.width)))
         def on_mousewheel(event):
             delta = -1 if event.delta > 0 else 1
             canvas.yview_scroll(delta * 3, "units")
         canvas.bind_all("<MouseWheel>", on_mousewheel)
 
         form = ttk.Frame(content, padding=8)
-        form.pack(fill="x")
+        form.pack(fill="x", expand=True)
+        for idx in range(8):
+            form.grid_columnconfigure(idx, weight=1 if idx % 2 else 0, minsize=0)
         self.section_title(form, "工程基本資料", 0)
 
         ttk.Checkbutton(
@@ -1557,8 +2441,8 @@ class App(tk.Tk):
         self.entry(form, 7, 2, "保固年限", "warranty_years", 8)
         self.readonly_entry(form, 7, 4, "保固結束日", "warranty_end_date", 14)
         ttk.Label(form, text="保固備註").grid(row=7, column=6, sticky="ne", padx=3, pady=2)
-        warranty_note = tk.Text(form, height=4, width=20, wrap="word", font=("Microsoft JhengHei UI", 10))
-        warranty_note.configure(borderwidth=1, relief="solid", highlightthickness=1, highlightbackground="#888888")
+        warranty_note = tk.Text(form, height=4, width=14, wrap="word", font=("Microsoft JhengHei UI", 10))
+        warranty_note.configure(borderwidth=1, relief="solid", highlightthickness=1, highlightbackground=OSX_BORDER, background=OSX_ENTRY_BG, foreground=OSX_TEXT, insertbackground=OSX_TEXT)
         warranty_note.grid(row=7, column=7, sticky="ew", padx=3, pady=2)
         warranty_note.bind("<KeyRelease>", lambda e: self.mark_dirty())
         warranty_note.bind("<FocusOut>", lambda e: self.mark_dirty())
@@ -1589,19 +2473,20 @@ class App(tk.Tk):
 
         self.section_title(form, "保證金", 12)
         self.entry(form, 13, 0, "差額保證金", "deposit_difference", 12)
-        self.readonly_entry(form, 13, 2, "履約保證金", "deposit_performance", 12)
+        self.performance_deposit_entry(form, 13, 2)
         self.entry(form, 13, 4, "履保金比例", "performance_bond_rate", 8)
         self.readonly_entry(form, 13, 6, "保證金總額", "deposit_total", 12)
         self.readonly_entry(form, 14, 0, "保固保證金", "warranty_deposit", 12)
         self.entry(form, 14, 2, "保固金比例", "warranty_rate", 8)
+        self.entry(form, 14, 4, "履保金型式", "performance_bond_type", 12)
+        self.entry(form, 14, 6, "保固金型式", "warranty_bond_type", 12)
 
         self.build_money_sections(form)
 
-        for i in range(8):
-            form.grid_columnconfigure(i, weight=1)
+        # 欄位寬度已在 form 建立時設定為自適應。
 
         bid_box = ttk.LabelFrame(content, text="招標情形", padding=8)
-        bid_box.pack(fill="both", expand=True, pady=8)
+        bid_box.pack(fill="x", expand=False, pady=8)
         self.bid_tree = EditableTree(
             bid_box,
             ["awarded", "round_no", "online_date", "open_date", "award_date"],
@@ -1610,7 +2495,8 @@ class App(tk.Tk):
             self.mark_dirty,
             add_command=self.open_bid_calendar_dialog
         )
-        self.bid_tree.pack(fill="both", expand=True)
+        self.bid_tree.tree.configure(height=6)
+        self.bid_tree.pack(fill="x", expand=False)
 
         ttk.Button(content, text="重新計算預訂竣工日", command=self.recalculate).pack(anchor="e", pady=4)
 
@@ -1661,7 +2547,7 @@ class App(tk.Tk):
         ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
 
         cal_frame.pack()
-        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+        ttk.Label(win, textvariable=selected_day_var, foreground=OSX_ACCENT).pack(anchor="w", padx=12)
 
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
@@ -1849,7 +2735,7 @@ class App(tk.Tk):
 
         cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
         cal_frame.pack()
-        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+        ttk.Label(win, textvariable=selected_day_var, foreground=OSX_ACCENT).pack(anchor="w", padx=12)
 
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
@@ -1930,7 +2816,7 @@ class App(tk.Tk):
         top.pack(fill="x")
         cal_frame = ttk.Frame(win, padding=10)
         cal_frame.pack()
-        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+        ttk.Label(win, textvariable=selected_day_var, foreground=OSX_ACCENT).pack(anchor="w", padx=12)
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
         ttk.Label(form, text="補班名稱").grid(row=0, column=0, sticky="e", padx=(0, 6))
@@ -2048,7 +2934,7 @@ class App(tk.Tk):
 
         cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
         cal_frame.pack()
-        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+        ttk.Label(win, textvariable=selected_day_var, foreground=OSX_ACCENT).pack(anchor="w", padx=12)
 
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
@@ -2227,7 +3113,7 @@ class App(tk.Tk):
 
         cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
         cal_frame.pack()
-        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+        ttk.Label(win, textvariable=selected_day_var, foreground=OSX_ACCENT).pack(anchor="w", padx=12)
 
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
@@ -2301,7 +3187,7 @@ class App(tk.Tk):
 
         cal_area = ttk.Frame(self.tab_calendar)
         cal_area.pack(fill="both", expand=True, pady=8)
-        self.cal_canvas = tk.Canvas(cal_area, background="white")
+        self.cal_canvas = tk.Canvas(cal_area, background=OSX_PANEL_BG)
         self.cal_canvas.grid(row=0, column=0, sticky="nsew")
         cal_area.grid_rowconfigure(0, weight=1)
         cal_area.grid_columnconfigure(0, weight=1)
@@ -2310,32 +3196,884 @@ class App(tk.Tk):
 
     def build_payment_tabs(self):
         self.add_page_edit_toggle(self.tab_payment_contract)
-        self.payment_contract_tree = self.make_payment_tree(
-            self.tab_payment_contract,
-            "發包工程費計價：先建立資料欄位，後續再依需求增加計價公式與報表。"
-        )
-        self.add_page_edit_toggle(self.tab_payment_other)
-        self.payment_other_tree = self.make_payment_tree(
-            self.tab_payment_other,
-            "發包以外計價：先建立資料欄位，後續再依需求增加分類與核銷流程。"
-        )
-        self.add_page_edit_toggle(self.tab_payment_admin)
-        self.payment_admin_tree = self.make_payment_tree(
-            self.tab_payment_admin,
-            "管理費計價：先建立資料欄位，後續再依需求增加管理費計算規則。"
-        )
+        self.payment_contract_tree = self.make_contract_payment_tree(self.tab_payment_contract)
 
-    def make_payment_tree(self, parent, hint):
-        ttk.Label(parent, text=hint).pack(anchor="w")
-        tree = EditableTree(
+        self.add_page_edit_toggle(self.tab_payment_other)
+        self.payment_other_tree = self.make_payment_other_tree(self.tab_payment_other)
+
+        self.add_page_edit_toggle(self.tab_payment_admin)
+        self.build_payment_admin_tab(self.tab_payment_admin)
+
+    def make_contract_payment_tree(self, parent):
+        ttk.Label(
             parent,
-            ["day", "item", "voucher_no", "amount", "note"],
-            ["日期", "項目", "核銷/憑證號", "核銷金額", "備註"],
-            [120, 260, 160, 140, 320],
-            self.mark_dirty
+            text="發包工程費計價：第一欄固定，第二欄以後可橫向捲動；累計欄位固定依期數由舊到新計算。"
+        ).pack(anchor="w")
+        tree = FixedFirstColumnTree(
+            parent,
+            PAYMENT_CONTRACT_FIELDS,
+            PAYMENT_CONTRACT_HEADINGS,
+            PAYMENT_CONTRACT_WIDTHS,
+            self.on_payment_contract_changed,
+            add_command=self.open_contract_payment_add_dialog,
+            edit_command=self.open_contract_payment_edit_dialog,
+            height=14,
+            money_columns=PAYMENT_CONTRACT_MONEY_FIELDS,
+            date_columns=PAYMENT_CONTRACT_DATE_FIELDS,
         )
         tree.pack(fill="both", expand=True, pady=6)
         return tree
+
+    def configure_tree_alignment(self, tree_widget, fields, money_fields=None, left_fields=None):
+        money_fields = set(money_fields or [])
+        left_fields = set(left_fields or [])
+        for field in fields:
+            try:
+                if field in money_fields:
+                    tree_widget.column(field, anchor="e")
+                elif field in left_fields:
+                    tree_widget.column(field, anchor="w")
+                else:
+                    tree_widget.column(field, anchor="center")
+            except tk.TclError:
+                pass
+
+    def make_payment_other_tree(self, parent):
+        ttk.Label(parent, text="發包以外計價：累計欄位依期數由舊到新計算，不受目前瀏覽排序影響。滑鼠雙擊或按編輯可開啟日期/下拉輸入視窗。" ).pack(anchor="w")
+        tree = EditableTree(
+            parent,
+            PAYMENT_OTHER_FIELDS,
+            PAYMENT_OTHER_HEADINGS,
+            PAYMENT_OTHER_WIDTHS,
+            self.on_payment_other_changed,
+            add_command=self.open_payment_other_add_dialog,
+            edit_command=self.open_payment_other_edit_dialog,
+            height=14,
+        )
+        self.configure_tree_alignment(tree.tree, PAYMENT_OTHER_FIELDS, PAYMENT_OTHER_MONEY_FIELDS, PAYMENT_OTHER_LEFT_FIELDS)
+        tree.pack(fill="both", expand=True, pady=6)
+        return tree
+
+    def build_payment_admin_tab(self, parent):
+        self.admin_top_frame = ttk.LabelFrame(parent, text="管理費提撥與可支用額度", padding=8)
+        self.admin_top_frame.pack(fill="x", pady=(0, 8))
+        self.admin_calc_vars = {}
+
+        def add_admin_var(key, value=""):
+            var = tk.StringVar(value=value)
+            var.trace_add("write", self.on_admin_setup_changed)
+            self.admin_calc_vars[key] = var
+            return var
+
+        ttk.Label(self.admin_top_frame, text="管理費：").grid(row=0, column=0, sticky="e", padx=4, pady=3)
+        self.admin_calc_vars["mgmt_fee"] = tk.StringVar()
+        mgmt_ent = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["mgmt_fee"], width=18, state="readonly")
+        mgmt_ent.grid(row=0, column=1, sticky="ew", padx=4, pady=3)
+        ttk.Label(self.admin_top_frame, text="變更後管理費：").grid(row=0, column=2, sticky="e", padx=4, pady=3)
+        self.admin_calc_vars["change_mgmt_fee"] = add_admin_var("change_mgmt_fee")
+        change_ent = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["change_mgmt_fee"], width=18)
+        change_ent.grid(row=0, column=3, sticky="ew", padx=4, pady=3)
+        ttk.Label(self.admin_top_frame, text="（暫不自動讀取變更資料）").grid(row=0, column=4, sticky="w", padx=4, pady=3)
+
+        heads = ["提撥階段", "提撥金額", "0C12差費", "0C11加班費", "0C14其他"]
+        for c, head in enumerate(heads):
+            ttk.Label(self.admin_top_frame, text=head, font=("Microsoft JhengHei UI", 10, "bold")).grid(row=1, column=c, sticky="ew", padx=4, pady=3)
+        labels = [
+            "第一次提撥(開工_60%)", "第二次提撥(60%_30%)",
+            "第三次提撥(80%_10%)", "第四次提撥(竣工_負計)",
+        ]
+        for idx, label in enumerate(labels, start=1):
+            r = idx + 1
+            ttk.Label(self.admin_top_frame, text=label + "：").grid(row=r, column=0, sticky="e", padx=4, pady=3)
+            for c, suffix in enumerate(["amount", "0c12", "0c11", "0c14"], start=1):
+                key = f"alloc{idx}_{suffix}"
+                ent = ttk.Entry(self.admin_top_frame, textvariable=add_admin_var(key), width=16)
+                ent.grid(row=r, column=c, sticky="ew", padx=4, pady=3)
+                ent.bind("<FocusOut>", lambda e, k=key: self.format_admin_setup_money(k))
+                ent.bind("<Return>", lambda e, k=key: self.format_admin_setup_money(k))
+
+        total_row = 6
+        ttk.Label(self.admin_top_frame, text="可支用合計：", font=("Microsoft JhengHei UI", 10, "bold")).grid(row=total_row, column=0, sticky="e", padx=4, pady=3)
+        self.admin_calc_vars["available_0c12"] = tk.StringVar()
+        self.admin_calc_vars["available_0c11"] = tk.StringVar()
+        self.admin_calc_vars["available_0c14"] = tk.StringVar()
+        ttk.Label(self.admin_top_frame, text="0C12差費合計").grid(row=total_row, column=1, sticky="e", padx=4, pady=3)
+        self.admin_available_0c12_entry = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["available_0c12"], state="readonly", width=16, style="AdminAvailable.TEntry")
+        self.admin_available_0c12_entry.grid(row=total_row, column=2, sticky="ew", padx=4, pady=3)
+        ttk.Label(self.admin_top_frame, text="0C11加班費合計").grid(row=total_row, column=3, sticky="e", padx=4, pady=3)
+        self.admin_available_0c11_entry = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["available_0c11"], state="readonly", width=16, style="AdminAvailable.TEntry")
+        self.admin_available_0c11_entry.grid(row=total_row, column=4, sticky="ew", padx=4, pady=3)
+        ttk.Label(self.admin_top_frame, text="0C14其他合計").grid(row=total_row, column=5, sticky="e", padx=4, pady=3)
+        self.admin_available_0c14_entry = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["available_0c14"], state="readonly", width=16, style="AdminAvailable.TEntry")
+        self.admin_available_0c14_entry.grid(row=total_row, column=6, sticky="ew", padx=4, pady=3)
+
+        used_row = 7
+        ttk.Label(self.admin_top_frame, text="已計價累計：", font=("Microsoft JhengHei UI", 10, "bold")).grid(row=used_row, column=0, sticky="e", padx=4, pady=3)
+        self.admin_calc_vars["used_0c12"] = tk.StringVar()
+        self.admin_calc_vars["used_0c11"] = tk.StringVar()
+        self.admin_calc_vars["used_0c14"] = tk.StringVar()
+        self.admin_used_0c12_entry = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["used_0c12"], state="readonly", width=16)
+        self.admin_used_0c12_entry.grid(row=used_row, column=2, sticky="ew", padx=4, pady=3)
+        self.admin_used_0c11_entry = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["used_0c11"], state="readonly", width=16)
+        self.admin_used_0c11_entry.grid(row=used_row, column=4, sticky="ew", padx=4, pady=3)
+        self.admin_used_0c14_entry = ttk.Entry(self.admin_top_frame, textvariable=self.admin_calc_vars["used_0c14"], state="readonly", width=16)
+        self.admin_used_0c14_entry.grid(row=used_row, column=6, sticky="ew", padx=4, pady=3)
+        for c in range(7):
+            self.admin_top_frame.grid_columnconfigure(c, weight=1 if c else 0)
+
+        lower = ttk.LabelFrame(parent, text="管理費計價明細", padding=8)
+        lower.pack(fill="both", expand=True)
+        self.payment_admin_tree = EditableTree(
+            lower,
+            PAYMENT_ADMIN_FIELDS,
+            PAYMENT_ADMIN_HEADINGS,
+            PAYMENT_ADMIN_WIDTHS,
+            self.on_payment_admin_changed,
+            add_command=self.open_payment_admin_add_dialog,
+            edit_command=self.open_payment_admin_edit_dialog,
+            height=12,
+        )
+        self.configure_tree_alignment(self.payment_admin_tree.tree, PAYMENT_ADMIN_FIELDS, PAYMENT_ADMIN_MONEY_FIELDS)
+        self.payment_admin_tree.pack(fill="both", expand=True, pady=6)
+
+    def on_payment_contract_changed(self):
+        self.refresh_contract_payment_cumulatives(mark_dirty=False)
+        self.mark_dirty()
+
+    def open_contract_payment_add_dialog(self):
+        self.open_contract_payment_dialog(item=None)
+
+    def open_contract_payment_edit_dialog(self):
+        if not hasattr(self, "payment_contract_tree"):
+            return
+        item = self.payment_contract_tree.focus()
+        if not item:
+            return
+        self.open_contract_payment_dialog(item=item)
+
+    def open_contract_payment_dialog(self, item=None):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        tree = self.payment_contract_tree
+        is_edit = item is not None
+        old_values = tree.get_item_values(item) if is_edit else [""] * len(PAYMENT_CONTRACT_FIELDS)
+        old_values = (old_values + [""] * len(PAYMENT_CONTRACT_FIELDS))[:len(PAYMENT_CONTRACT_FIELDS)]
+        if not is_edit and not old_values[0]:
+            old_values[0] = str(len(tree.get_rows()) + 1)
+
+        win = tk.Toplevel(self)
+        win.title("編輯發包工程費計價資料" if is_edit else "新增發包工程費計價資料")
+        win.transient(self)
+        win.grab_set()
+        win.geometry("780x640")
+        win.minsize(640, 480)
+
+        canvas = tk.Canvas(win, highlightthickness=0, background=OSX_WINDOW_BG)
+        vs = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        form = ttk.Frame(canvas, padding=12)
+        canvas_window = canvas.create_window((0, 0), window=form, anchor="nw")
+        canvas.configure(yscrollcommand=vs.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vs.grid(row=0, column=1, sticky="ns")
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1)
+        form.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(canvas_window, width=max(e.width, form.winfo_reqwidth())))
+
+        vars_map = {}
+        entries = {}
+        for idx, (field, heading) in enumerate(zip(PAYMENT_CONTRACT_FIELDS, PAYMENT_CONTRACT_HEADINGS)):
+            row = idx // 2
+            col = (idx % 2) * 3
+            ttk.Label(form, text=heading + "：").grid(row=row, column=col, sticky="e", padx=(4, 2), pady=4)
+            var = tk.StringVar(value=old_values[idx])
+            vars_map[field] = var
+            holder = ttk.Frame(form)
+            holder.grid(row=row, column=col + 1, sticky="ew", padx=(2, 8), pady=4)
+            form.grid_columnconfigure(col + 1, weight=1)
+            if field in PAYMENT_CONTRACT_DATE_FIELDS:
+                ent = ttk.Entry(holder, textvariable=var, width=16)
+                ent.pack(side="left", fill="x", expand=True)
+                ttk.Button(holder, text="▼", width=3, command=lambda v=var, w=win, h=heading: self.open_payment_date_picker(v, w, h)).pack(side="left", padx=(3, 0))
+            else:
+                ent = ttk.Entry(holder, textvariable=var, width=22)
+                ent.pack(fill="x", expand=True)
+            entries[field] = ent
+            if field in PAYMENT_CONTRACT_CUMULATIVE_FIELDS:
+                ent.configure(state="readonly")
+            if field in PAYMENT_CONTRACT_MONEY_FIELDS and field not in PAYMENT_CONTRACT_CUMULATIVE_FIELDS:
+                ent.bind("<FocusOut>", lambda e, v=var: v.set(self.format_money_value(v.get()) if v.get().strip() else ""))
+                ent.bind("<Return>", lambda e, v=var: v.set(self.format_money_value(v.get()) if v.get().strip() else ""))
+
+        def ok():
+            values = []
+            for field in PAYMENT_CONTRACT_FIELDS:
+                raw = vars_map[field].get().strip()
+                if field in PAYMENT_CONTRACT_MONEY_FIELDS and raw:
+                    raw = self.format_money_value(raw)
+                values.append(raw)
+            if is_edit:
+                tree.set_item_values(item, values)
+            else:
+                tree.insert_row(values, select=True)
+            win.destroy()
+            self.refresh_contract_payment_cumulatives(mark_dirty=True)
+
+        btns = ttk.Frame(win, padding=10)
+        btns.grid(row=1, column=0, columnspan=2, sticky="ew")
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="確定", command=ok).pack(side="right", padx=4)
+        entries.get("period_no", next(iter(entries.values()))).focus_set()
+
+    def open_payment_date_picker(self, target_var, parent_win=None, title="選擇日期"):
+        base_date = parse_date(target_var.get()) or date.today()
+        win = tk.Toplevel(parent_win or self)
+        win.title(title)
+        win.transient(parent_win or self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        year_var = tk.IntVar(value=base_date.year)
+        month_var = tk.IntVar(value=base_date.month)
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+        cal_frame = ttk.Frame(win, padding=(10, 0, 10, 10))
+        cal_frame.pack()
+
+        def render_calendar():
+            for child in cal_frame.winfo_children():
+                child.destroy()
+            try:
+                year = int(year_var.get())
+                month = int(month_var.get())
+                if month < 1 or month > 12:
+                    raise ValueError
+            except (tk.TclError, ValueError):
+                return
+            for cidx, name in enumerate(WEEKDAY_NAMES):
+                ttk.Label(cal_frame, text="星期" + name, width=9, anchor="center").grid(row=0, column=cidx, padx=1, pady=1)
+            cal = calendar.Calendar(firstweekday=0)
+            for ridx, week in enumerate(cal.monthdatescalendar(year, month), start=1):
+                for cidx, day in enumerate(week):
+                    if day.month != month:
+                        ttk.Label(cal_frame, text="", width=9).grid(row=ridx, column=cidx, padx=1, pady=1)
+                    else:
+                        ttk.Button(cal_frame, text=str(day.day), width=8, command=lambda d=day: choose(d)).grid(row=ridx, column=cidx, padx=1, pady=1)
+
+        def shift_month(delta):
+            year = year_var.get()
+            month = month_var.get() + delta
+            if month < 1:
+                month = 12
+                year -= 1
+            elif month > 12:
+                month = 1
+                year += 1
+            year_var.set(year)
+            month_var.set(month)
+            render_calendar()
+
+        def choose(day):
+            target_var.set(day.strftime("%Y-%m-%d"))
+            win.destroy()
+
+        ttk.Button(top, text="上一月", command=lambda: shift_month(-1)).pack(side="left", padx=(0, 8))
+        ttk.Label(top, text="年").pack(side="left")
+        year_spin = ttk.Spinbox(top, from_=base_date.year - 30, to=base_date.year + 30, textvariable=year_var, width=8, command=render_calendar)
+        year_spin.pack(side="left", padx=(2, 8))
+        ttk.Label(top, text="月").pack(side="left")
+        month_spin = ttk.Spinbox(top, from_=1, to=12, textvariable=month_var, width=5, command=render_calendar)
+        month_spin.pack(side="left", padx=(2, 8))
+        ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
+        ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
+        year_spin.bind("<Return>", lambda e: render_calendar())
+        month_spin.bind("<Return>", lambda e: render_calendar())
+        render_calendar()
+
+    def refresh_contract_payment_cumulatives(self, mark_dirty=False):
+        if not hasattr(self, "payment_contract_tree"):
+            return
+        rows = self.payment_contract_tree.get_rows()
+        if not rows:
+            return
+        indexes = {field: idx for idx, field in enumerate(PAYMENT_CONTRACT_FIELDS)}
+
+        def period_key(indexed_row):
+            original_index, row = indexed_row
+            text = str(row[indexes["period_no"]] if indexes["period_no"] < len(row) else "").strip()
+            if not text:
+                return (2, original_index)
+            cleaned = text.replace("第", "").replace("期", "").strip()
+            try:
+                return (0, Decimal(cleaned), original_index)
+            except InvalidOperation:
+                parts = re.split(r"(\d+(?:\.\d+)?)", cleaned)
+                key = []
+                for part in parts:
+                    if not part:
+                        continue
+                    try:
+                        key.append((0, Decimal(part)))
+                    except InvalidOperation:
+                        key.append((1, part.lower()))
+                return (1, key, original_index)
+
+        prepared_rows = []
+        for raw_row in rows:
+            row = (list(raw_row) + [""] * len(PAYMENT_CONTRACT_FIELDS))[:len(PAYMENT_CONTRACT_FIELDS)]
+            for field in PAYMENT_CONTRACT_MONEY_FIELDS - PAYMENT_CONTRACT_CUMULATIVE_FIELDS:
+                idx = indexes[field]
+                if str(row[idx]).strip():
+                    row[idx] = self.format_money_value(row[idx])
+            prepared_rows.append(row)
+
+        calculated_rows = [list(row) for row in prepared_rows]
+        cum_billing = Decimal("0")
+        cum_billing_tax = Decimal("0")
+        cum_retention = Decimal("0")
+        cum_paid = Decimal("0")
+        cum_paid_tax = Decimal("0")
+
+        for original_index, row in sorted(enumerate(prepared_rows), key=period_key):
+            cum_billing += self.money_decimal(row[indexes["billing_amount_untaxed"]])
+            cum_billing_tax += self.money_decimal(row[indexes["billing_business_tax"]])
+            cum_retention += self.money_decimal(row[indexes["retention_amount"]])
+            cum_paid += self.money_decimal(row[indexes["paid_amount_untaxed"]])
+            cum_paid_tax += self.money_decimal(row[indexes["paid_business_tax"]])
+            calculated_rows[original_index][indexes["cumulative_billing_amount"]] = self.format_money_value(cum_billing) if cum_billing else ""
+            calculated_rows[original_index][indexes["cumulative_billing_tax"]] = self.format_money_value(cum_billing_tax) if cum_billing_tax else ""
+            calculated_rows[original_index][indexes["cumulative_retention_amount"]] = self.format_money_value(cum_retention) if cum_retention else ""
+            calculated_rows[original_index][indexes["cumulative_paid_amount"]] = self.format_money_value(cum_paid) if cum_paid else ""
+            calculated_rows[original_index][indexes["cumulative_paid_tax"]] = self.format_money_value(cum_paid_tax) if cum_paid_tax else ""
+
+        self.payment_contract_tree.set_rows(calculated_rows)
+        if mark_dirty:
+            self.mark_dirty()
+
+    def payment_contract_db_rows_to_tree(self, db_rows):
+        rows = []
+        for r in db_rows:
+            has_new_data = any((r[field] if field in r.keys() and r[field] is not None else "") for field in PAYMENT_CONTRACT_FIELDS)
+            if has_new_data:
+                rows.append([r[field] if field in r.keys() and r[field] is not None else "" for field in PAYMENT_CONTRACT_FIELDS])
+            else:
+                legacy_amount = r["amount"] if "amount" in r.keys() else ""
+                row = [""] * len(PAYMENT_CONTRACT_FIELDS)
+                idx = {field: i for i, field in enumerate(PAYMENT_CONTRACT_FIELDS)}
+                row[idx["period_no"]] = r["item"] if "item" in r.keys() else ""
+                row[idx["owner_payment_date"]] = r["day"] if "day" in r.keys() else ""
+                row[idx["estimated_amount_taxed"]] = self.format_money_value(legacy_amount) if str(legacy_amount).strip() else ""
+                row[idx["payment_period"]] = r["note"] if "note" in r.keys() else ""
+                rows.append(row)
+        return rows
+
+    def payment_contract_tree_rows_to_db(self):
+        self.refresh_contract_payment_cumulatives(mark_dirty=False)
+        rows = []
+        for r in self.payment_contract_tree.get_rows():
+            vals = (list(r) + [""] * len(PAYMENT_CONTRACT_FIELDS))[:len(PAYMENT_CONTRACT_FIELDS)]
+            rows.append({field: vals[idx] for idx, field in enumerate(PAYMENT_CONTRACT_FIELDS)})
+        return rows
+
+
+    def on_payment_other_changed(self):
+        self.refresh_payment_other_cumulatives(mark_dirty=False)
+        self.mark_dirty()
+
+    def on_payment_admin_changed(self):
+        self.refresh_payment_admin_cumulatives(mark_dirty=False)
+        self.refresh_admin_setup_totals()
+        self.mark_dirty()
+
+    def open_payment_other_add_dialog(self):
+        self.open_payment_other_dialog(item=None)
+
+    def open_payment_other_edit_dialog(self):
+        if not hasattr(self, "payment_other_tree"):
+            return
+        tree = self.payment_other_tree.tree
+        item = tree.focus()
+        if not item or not tree.exists(item):
+            selected = tree.selection()
+            item = selected[0] if selected else ""
+        if not item or not tree.exists(item):
+            messagebox.showinfo("編輯資料", "請先選取要修改的資料列。")
+            return
+        tree.selection_set(item)
+        tree.focus(item)
+        self.open_payment_other_dialog(item=item)
+
+    def open_payment_admin_add_dialog(self):
+        self.open_payment_admin_dialog(item=None)
+
+    def open_payment_admin_edit_dialog(self):
+        if not hasattr(self, "payment_admin_tree"):
+            return
+        tree = self.payment_admin_tree.tree
+        item = tree.focus()
+        if not item or not tree.exists(item):
+            selected = tree.selection()
+            item = selected[0] if selected else ""
+        if not item or not tree.exists(item):
+            messagebox.showinfo("編輯資料", "請先選取要修改的資料列。")
+            return
+        tree.selection_set(item)
+        tree.focus(item)
+        self.open_payment_admin_dialog(item=item)
+
+    def open_payment_other_dialog(self, item=None):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        tree = self.payment_other_tree
+        is_edit = item is not None
+        old_values = list(tree.tree.item(item, "values")) if is_edit else [""] * len(PAYMENT_OTHER_FIELDS)
+        old_values = (old_values + [""] * len(PAYMENT_OTHER_FIELDS))[:len(PAYMENT_OTHER_FIELDS)]
+        if not is_edit and not old_values[0]:
+            old_values[0] = str(len(tree.get_rows()) + 1)
+        self.open_structured_payment_dialog(
+            title="編輯發包以外計價資料" if is_edit else "新增發包以外計價資料",
+            fields=PAYMENT_OTHER_FIELDS,
+            headings=PAYMENT_OTHER_HEADINGS,
+            old_values=old_values,
+            date_fields=PAYMENT_OTHER_DATE_FIELDS,
+            money_fields=PAYMENT_OTHER_MONEY_FIELDS,
+            readonly_fields=PAYMENT_OTHER_CUMULATIVE_FIELDS,
+            combo_fields={"payment_item": PAYMENT_OTHER_ITEM_OPTIONS},
+            on_ok=lambda values: self._finish_payment_other_dialog(tree, item, values, is_edit),
+        )
+
+    def _finish_payment_other_dialog(self, tree, item, values, is_edit):
+        if is_edit:
+            tree.tree.item(item, values=values)
+        else:
+            tree.add_row(values)
+        self.refresh_payment_other_cumulatives(mark_dirty=True)
+
+    def open_payment_admin_dialog(self, item=None):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        tree = self.payment_admin_tree
+        is_edit = item is not None
+        old_values = list(tree.tree.item(item, "values")) if is_edit else [""] * len(PAYMENT_ADMIN_FIELDS)
+        old_values = (old_values + [""] * len(PAYMENT_ADMIN_FIELDS))[:len(PAYMENT_ADMIN_FIELDS)]
+        if not is_edit and not old_values[0]:
+            old_values[0] = str(len(tree.get_rows()) + 1)
+        self.open_structured_payment_dialog(
+            title="編輯管理費計價資料" if is_edit else "新增管理費計價資料",
+            fields=PAYMENT_ADMIN_FIELDS,
+            headings=PAYMENT_ADMIN_HEADINGS,
+            old_values=old_values,
+            date_fields=PAYMENT_ADMIN_DATE_FIELDS,
+            money_fields=PAYMENT_ADMIN_MONEY_FIELDS,
+            readonly_fields=PAYMENT_ADMIN_CUMULATIVE_FIELDS,
+            combo_fields={},
+            on_ok=lambda values: self._finish_payment_admin_dialog(tree, item, values, is_edit),
+        )
+
+    def _finish_payment_admin_dialog(self, tree, item, values, is_edit):
+        if is_edit:
+            tree.tree.item(item, values=values)
+        else:
+            tree.add_row(values)
+        self.refresh_payment_admin_cumulatives(mark_dirty=True)
+
+    def open_structured_payment_dialog(self, title, fields, headings, old_values, date_fields, money_fields, readonly_fields, combo_fields, on_ok):
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.transient(self)
+        win.grab_set()
+        win.geometry("760x520")
+        win.minsize(620, 420)
+        canvas = tk.Canvas(win, highlightthickness=0, background=OSX_WINDOW_BG)
+        vs = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        form = ttk.Frame(canvas, padding=12)
+        canvas_window = canvas.create_window((0, 0), window=form, anchor="nw")
+        canvas.configure(yscrollcommand=vs.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        vs.grid(row=0, column=1, sticky="ns")
+        win.grid_rowconfigure(0, weight=1)
+        win.grid_columnconfigure(0, weight=1)
+        form.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(canvas_window, width=max(e.width, form.winfo_reqwidth())))
+
+        vars_map = {}
+        first_entry = None
+        for idx, (field, heading) in enumerate(zip(fields, headings)):
+            row = idx // 2
+            col = (idx % 2) * 3
+            ttk.Label(form, text=heading + "：").grid(row=row, column=col, sticky="e", padx=(4, 2), pady=4)
+            var = tk.StringVar(value=old_values[idx] if idx < len(old_values) else "")
+            vars_map[field] = var
+            holder = ttk.Frame(form)
+            holder.grid(row=row, column=col + 1, sticky="ew", padx=(2, 8), pady=4)
+            form.grid_columnconfigure(col + 1, weight=1)
+            if field in date_fields:
+                ent = ttk.Entry(holder, textvariable=var, width=16)
+                ent.pack(side="left", fill="x", expand=True)
+                ttk.Button(holder, text="▼", width=3, command=lambda v=var, w=win, h=heading: self.open_payment_date_picker(v, w, h)).pack(side="left", padx=(3, 0))
+            elif field in combo_fields:
+                ent = ttk.Combobox(holder, textvariable=var, values=combo_fields[field], state="readonly", width=18)
+                ent.pack(fill="x", expand=True)
+            else:
+                ent = ttk.Entry(holder, textvariable=var, width=22)
+                ent.pack(fill="x", expand=True)
+            if first_entry is None:
+                first_entry = ent
+            if field in readonly_fields:
+                ent.configure(state="readonly")
+            if field in money_fields and field not in readonly_fields:
+                ent.bind("<FocusOut>", lambda e, v=var: v.set(self.format_money_value(v.get()) if v.get().strip() else ""))
+                ent.bind("<Return>", lambda e, v=var: v.set(self.format_money_value(v.get()) if v.get().strip() else ""))
+
+        def ok():
+            values = []
+            for field in fields:
+                raw = vars_map[field].get().strip()
+                if field in money_fields and raw:
+                    raw = self.format_money_value(raw)
+                values.append(raw)
+            win.destroy()
+            on_ok(values)
+
+        btns = ttk.Frame(win, padding=10)
+        btns.grid(row=1, column=0, columnspan=2, sticky="ew")
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="確定", command=ok).pack(side="right", padx=4)
+        if first_entry:
+            first_entry.focus_set()
+
+    def _remember_and_restore_tree_focus(self, editable_tree, fields, key_field, before_values=None):
+        """Return a restorer that re-selects the same logical row after set_rows()."""
+        target_key = ""
+        if before_values:
+            idx = {field: i for i, field in enumerate(fields)}
+            target_key = str(before_values[idx.get(key_field, 0)] or "").strip()
+        if not target_key:
+            tree = editable_tree.tree
+            item = tree.focus()
+            if item and tree.exists(item):
+                vals = list(tree.item(item, "values"))
+                idx = {field: i for i, field in enumerate(fields)}
+                target_key = str(vals[idx.get(key_field, 0)] or "").strip()
+        def restore():
+            if not target_key:
+                return
+            tree = editable_tree.tree
+            idx = {field: i for i, field in enumerate(fields)}
+            key_idx = idx.get(key_field, 0)
+            for child in tree.get_children():
+                vals = list(tree.item(child, "values"))
+                if key_idx < len(vals) and str(vals[key_idx] or "").strip() == target_key:
+                    tree.selection_set(child)
+                    tree.focus(child)
+                    tree.see(child)
+                    break
+        return restore
+
+    def refresh_payment_other_cumulatives(self, mark_dirty=False):
+        if not hasattr(self, "payment_other_tree"):
+            return
+        restore_focus = self._remember_and_restore_tree_focus(self.payment_other_tree, PAYMENT_OTHER_FIELDS, "period_no")
+        rows = self.payment_other_tree.get_rows()
+        if not rows:
+            return
+        indexes = {field: idx for idx, field in enumerate(PAYMENT_OTHER_FIELDS)}
+        prepared_rows = []
+        for raw_row in rows:
+            row = (list(raw_row) + [""] * len(PAYMENT_OTHER_FIELDS))[:len(PAYMENT_OTHER_FIELDS)]
+            for field in PAYMENT_OTHER_MONEY_FIELDS - PAYMENT_OTHER_CUMULATIVE_FIELDS:
+                idx = indexes[field]
+                if str(row[idx]).strip():
+                    row[idx] = self.format_money_value(row[idx])
+            prepared_rows.append(row)
+        calculated_rows = [list(row) for row in prepared_rows]
+        cum_amount = Decimal("0")
+        cum_alloc = Decimal("0")
+        for original_index, row in sorted(enumerate(prepared_rows), key=lambda x: period_sort_key(x[1][indexes["period_no"]], x[0])):
+            cum_amount += self.money_decimal(row[indexes["payment_amount"]])
+            cum_alloc += self.money_decimal(row[indexes["management_fee_allocation"]])
+            calculated_rows[original_index][indexes["cumulative_amount"]] = self.format_money_value(cum_amount) if cum_amount else ""
+            calculated_rows[original_index][indexes["cumulative_management_fee_allocation"]] = self.format_money_value(cum_alloc) if cum_alloc else ""
+        self.payment_other_tree.set_rows(calculated_rows)
+        self.configure_tree_alignment(self.payment_other_tree.tree, PAYMENT_OTHER_FIELDS, PAYMENT_OTHER_MONEY_FIELDS, PAYMENT_OTHER_LEFT_FIELDS)
+        restore_focus()
+        if mark_dirty:
+            self.mark_dirty()
+
+    def refresh_payment_admin_cumulatives(self, mark_dirty=False):
+        if not hasattr(self, "payment_admin_tree"):
+            return
+        restore_focus = self._remember_and_restore_tree_focus(self.payment_admin_tree, PAYMENT_ADMIN_FIELDS, "period_no")
+        rows = self.payment_admin_tree.get_rows()
+        if not rows:
+            self.refresh_admin_setup_totals()
+            return
+        indexes = {field: idx for idx, field in enumerate(PAYMENT_ADMIN_FIELDS)}
+        prepared_rows = []
+        for raw_row in rows:
+            row = (list(raw_row) + [""] * len(PAYMENT_ADMIN_FIELDS))[:len(PAYMENT_ADMIN_FIELDS)]
+            current_amount = (
+                self.money_decimal(row[indexes["travel_fee_billing"]]) +
+                self.money_decimal(row[indexes["overtime_fee_billing"]]) +
+                self.money_decimal(row[indexes["other_fee_billing"]])
+            )
+            row[indexes["current_amount"]] = self.format_money_value(current_amount) if current_amount else ""
+            for field in PAYMENT_ADMIN_MONEY_FIELDS - PAYMENT_ADMIN_CUMULATIVE_FIELDS:
+                idx = indexes[field]
+                if str(row[idx]).strip():
+                    row[idx] = self.format_money_value(row[idx])
+            prepared_rows.append(row)
+        calculated_rows = [list(row) for row in prepared_rows]
+        cumulative = Decimal("0")
+        cumulative_tax = Decimal("0")
+        for original_index, row in sorted(enumerate(prepared_rows), key=lambda x: period_sort_key(x[1][indexes["period_no"]], x[0])):
+            cumulative_tax += self.money_decimal(row[indexes["tax_amount"]])
+            cumulative += self.money_decimal(row[indexes["current_amount"]])
+            calculated_rows[original_index][indexes["cumulative_tax_amount"]] = self.format_money_value(cumulative_tax) if cumulative_tax else ""
+            calculated_rows[original_index][indexes["cumulative_amount"]] = self.format_money_value(cumulative) if cumulative else ""
+        self.payment_admin_tree.set_rows(calculated_rows)
+        self.configure_tree_alignment(self.payment_admin_tree.tree, PAYMENT_ADMIN_FIELDS, PAYMENT_ADMIN_MONEY_FIELDS)
+        restore_focus()
+        self.refresh_admin_setup_totals()
+        if mark_dirty:
+            self.mark_dirty()
+
+    def payment_other_db_rows_to_tree(self, db_rows):
+        rows = []
+        for r in db_rows:
+            has_new_data = any((r[field] if field in r.keys() and r[field] is not None else "") for field in PAYMENT_OTHER_FIELDS)
+            if has_new_data:
+                rows.append([r[field] if field in r.keys() and r[field] is not None else "" for field in PAYMENT_OTHER_FIELDS])
+            else:
+                row = [""] * len(PAYMENT_OTHER_FIELDS)
+                idx = {field: i for i, field in enumerate(PAYMENT_OTHER_FIELDS)}
+                row[idx["period_no"]] = r["voucher_no"] if "voucher_no" in r.keys() else ""
+                row[idx["payment_date"]] = r["day"] if "day" in r.keys() else ""
+                row[idx["payment_item"]] = r["item"] if "item" in r.keys() else ""
+                row[idx["payment_amount"]] = self.format_money_value(r["amount"]) if "amount" in r.keys() and str(r["amount"]).strip() else ""
+                rows.append(row)
+        return rows
+
+    def payment_other_tree_rows_to_db(self):
+        self.refresh_payment_other_cumulatives(mark_dirty=False)
+        rows = []
+        for r in self.payment_other_tree.get_rows():
+            vals = (list(r) + [""] * len(PAYMENT_OTHER_FIELDS))[:len(PAYMENT_OTHER_FIELDS)]
+            rows.append({field: vals[idx] for idx, field in enumerate(PAYMENT_OTHER_FIELDS)})
+        return rows
+
+    def payment_admin_db_rows_to_tree(self, db_rows):
+        rows = []
+        for r in db_rows:
+            has_new_data = any((r[field] if field in r.keys() and r[field] is not None else "") for field in PAYMENT_ADMIN_FIELDS)
+            if has_new_data:
+                rows.append([r[field] if field in r.keys() and r[field] is not None else "" for field in PAYMENT_ADMIN_FIELDS])
+            else:
+                row = [""] * len(PAYMENT_ADMIN_FIELDS)
+                idx = {field: i for i, field in enumerate(PAYMENT_ADMIN_FIELDS)}
+                row[idx["period_no"]] = r["voucher_no"] if "voucher_no" in r.keys() else ""
+                row[idx["payment_date"]] = r["day"] if "day" in r.keys() else ""
+                row[idx["current_amount"]] = self.format_money_value(r["amount"]) if "amount" in r.keys() and str(r["amount"]).strip() else ""
+                rows.append(row)
+        return rows
+
+    def payment_admin_tree_rows_to_db(self):
+        self.refresh_payment_admin_cumulatives(mark_dirty=False)
+        rows = []
+        for r in self.payment_admin_tree.get_rows():
+            vals = (list(r) + [""] * len(PAYMENT_ADMIN_FIELDS))[:len(PAYMENT_ADMIN_FIELDS)]
+            rows.append({field: vals[idx] for idx, field in enumerate(PAYMENT_ADMIN_FIELDS)})
+        return rows
+
+    def format_admin_setup_money(self, key):
+        if not hasattr(self, "admin_calc_vars") or key not in self.admin_calc_vars:
+            return
+        raw = self.admin_calc_vars[key].get().strip()
+        if raw:
+            self.admin_calc_vars[key].set(self.format_money_value(raw))
+
+    def on_admin_setup_changed(self, *_):
+        if self.loading or self.restoring:
+            return
+        self.refresh_admin_setup_totals()
+        self.mark_dirty()
+
+    def refresh_admin_management_fee_source(self):
+        if not hasattr(self, "admin_calc_vars"):
+            return
+        self.admin_calc_vars["mgmt_fee"].set(self.basic_vars.get("award_mgmt_fee", tk.StringVar()).get())
+
+    def refresh_admin_setup_totals(self):
+        if not hasattr(self, "admin_calc_vars"):
+            return
+        def d(key):
+            return self.money_decimal(self.admin_calc_vars.get(key, tk.StringVar()).get())
+        available_0c12 = sum(d(f"alloc{i}_0c12") for i in range(1, 5))
+        available_0c11 = sum(d(f"alloc{i}_0c11") for i in range(1, 5))
+        available_0c14 = sum(d(f"alloc{i}_0c14") for i in range(1, 5))
+        self.admin_calc_vars["available_0c12"].set(self.format_money_value(available_0c12) if available_0c12 else "")
+        self.admin_calc_vars["available_0c11"].set(self.format_money_value(available_0c11) if available_0c11 else "")
+        self.admin_calc_vars["available_0c14"].set(self.format_money_value(available_0c14) if available_0c14 else "")
+
+        used_0c12 = used_0c11 = used_0c14 = Decimal("0")
+        if hasattr(self, "payment_admin_tree"):
+            idx = {field: i for i, field in enumerate(PAYMENT_ADMIN_FIELDS)}
+            for row in self.payment_admin_tree.get_rows():
+                vals = (list(row) + [""] * len(PAYMENT_ADMIN_FIELDS))[:len(PAYMENT_ADMIN_FIELDS)]
+                used_0c12 += self.money_decimal(vals[idx["travel_fee_billing"]])
+                used_0c11 += self.money_decimal(vals[idx["overtime_fee_billing"]])
+                used_0c14 += self.money_decimal(vals[idx["other_fee_billing"]])
+        self.admin_calc_vars["used_0c12"].set(self.format_money_value(used_0c12) if used_0c12 else "")
+        self.admin_calc_vars["used_0c11"].set(self.format_money_value(used_0c11) if used_0c11 else "")
+        self.admin_calc_vars["used_0c14"].set(self.format_money_value(used_0c14) if used_0c14 else "")
+
+        for key, used, available in [
+            ("0c12", used_0c12, available_0c12),
+            ("0c11", used_0c11, available_0c11),
+            ("0c14", used_0c14, available_0c14),
+        ]:
+            available_widget = getattr(self, f"admin_available_{key}_entry", None)
+            if available_widget:
+                try:
+                    style_name = "AdminAvailableWarning.TEntry" if available and used > available else "AdminAvailable.TEntry"
+                    available_widget.configure(style=style_name)
+                except tk.TclError:
+                    pass
+
+
+
+    def on_change_award_field_changed(self, *_):
+        if self.loading or self.restoring:
+            return
+        self.refresh_change_award_calculated_fields()
+        self.dirty = True
+        self.schedule_auto_save()
+
+    def format_change_award_money(self, key):
+        if hasattr(self, "change_award_vars") and key in self.change_award_vars:
+            raw = self.change_award_vars[key].get().strip()
+            if raw:
+                self.change_award_vars[key].set(self.format_money_value(raw))
+
+    def refresh_change_award_select(self):
+        if not hasattr(self, "change_award_combo") or not self.current_project_id:
+            return
+        nums = self.db.change_numbers(self.current_project_id)
+        self.change_award_combo["values"] = nums
+        if nums:
+            if self.change_award_select_var.get() not in nums:
+                self.change_award_select_var.set(nums[-1])
+            self.load_selected_change_award_fields()
+        else:
+            self.change_award_select_var.set("")
+            for var in getattr(self, "change_award_vars", {}).values():
+                var.set("")
+
+    def load_selected_change_award_fields(self):
+        if not hasattr(self, "change_award_vars") or not self.current_project_id:
+            return
+        change_no = self.change_award_select_var.get().strip()
+        if not change_no:
+            return
+        record = self.db.change_record(self.current_project_id, change_no)
+        fields = record.get("fields", {}) if record else {}
+        self.loading = True
+        try:
+            for key, var in self.change_award_vars.items():
+                var.set(fields.get(key, ""))
+        finally:
+            self.loading = False
+        self.refresh_change_award_calculated_fields()
+
+    def save_current_change_award_fields(self):
+        if not hasattr(self, "change_award_vars") or not self.current_project_id:
+            return
+        change_no = self.change_award_select_var.get().strip()
+        if not change_no:
+            nums = self.db.change_numbers(self.current_project_id)
+            change_no = nums[-1] if nums else "1"
+            self.change_award_select_var.set(change_no)
+        record = self.db.change_record(self.current_project_id, change_no)
+        fields = dict(record.get("fields", {})) if record else {"change_no": change_no}
+        for key, var in self.change_award_vars.items():
+            fields[key] = var.get().strip()
+        demand = record.get("demand", []) if record else []
+        confirm = record.get("confirm", []) if record else []
+        budget = record.get("budget", []) if record else []
+        source = record.get("source_file", "") if record else ""
+        self.db.save_change_record(self.current_project_id, change_no, fields, demand, confirm, budget, source)
+        self.refresh_change_select()
+        self.refresh_change_award_select()
+
+    def refresh_change_award_calculated_fields(self):
+        if not hasattr(self, "change_award_vars"):
+            return
+        net = self.safe_amount(self.change_award_vars.get("change_award_contract_amount", tk.StringVar()).get())
+        tax = net * 0.05
+        total = net + tax
+        air = self.safe_amount(self.change_award_vars.get("change_award_air_pollution_fee", tk.StringVar()).get())
+        outside_without_air = sum(
+            self.safe_amount(self.change_award_vars.get(key, tk.StringVar()).get())
+            for key in (
+                "change_award_mgmt_fee", "change_award_self_labor", "change_award_self_material", "change_award_spare_material",
+                "change_award_railway_material", "change_award_supervision_fee", "change_award_freight", "change_award_other"
+            )
+        )
+        unfinished = net + outside_without_air
+        base = self.safe_amount(self.change_award_vars.get("change_award_base_price", tk.StringVar()).get())
+        budget_total = self.safe_amount(self.basic_vars.get("budget_contract_total", tk.StringVar()).get())
+        readonly_values = {
+            "change_award_contract_tax": tax,
+            "change_award_contract_total": total,
+            "change_award_input_tax": tax,
+            "change_award_unfinished_amount": unfinished,
+            "change_award_total_amount": unfinished + air + tax,
+        }
+        for key, value in readonly_values.items():
+            if key in self.change_award_vars:
+                text = self.money_text(value) if value else ""
+                if self.change_award_vars[key].get() != text:
+                    self.change_award_vars[key].set(text)
+        ratios = {
+            "change_award_contract_budget_ratio": self.percent_text(total, budget_total),
+            "change_award_contract_base_ratio": self.percent_text(total, base),
+            "change_award_base_budget_ratio": self.percent_text(base, budget_total),
+        }
+        for key, value in ratios.items():
+            if key in self.change_award_vars and self.change_award_vars[key].get() != value:
+                self.change_award_vars[key].set(value)
+
+    def load_admin_setup_from_project(self, project_row):
+        if not hasattr(self, "admin_calc_vars"):
+            return
+        self.refresh_admin_management_fee_source()
+        mapping = {
+            "change_mgmt_fee": "admin_change_mgmt_fee",
+            "alloc1_amount": "admin_alloc1_amount", "alloc1_0c12": "admin_alloc1_0c12", "alloc1_0c11": "admin_alloc1_0c11", "alloc1_0c14": "admin_alloc1_0c14",
+            "alloc2_amount": "admin_alloc2_amount", "alloc2_0c12": "admin_alloc2_0c12", "alloc2_0c11": "admin_alloc2_0c11", "alloc2_0c14": "admin_alloc2_0c14",
+            "alloc3_amount": "admin_alloc3_amount", "alloc3_0c12": "admin_alloc3_0c12", "alloc3_0c11": "admin_alloc3_0c11", "alloc3_0c14": "admin_alloc3_0c14",
+            "alloc4_amount": "admin_alloc4_amount", "alloc4_0c12": "admin_alloc4_0c12", "alloc4_0c11": "admin_alloc4_0c11", "alloc4_0c14": "admin_alloc4_0c14",
+        }
+        for var_key, db_key in mapping.items():
+            if var_key in self.admin_calc_vars:
+                self.admin_calc_vars[var_key].set(project_row[db_key] if db_key in project_row.keys() and project_row[db_key] is not None else "")
+        self.refresh_admin_setup_totals()
+
+    def collect_admin_setup_to_project_data(self, data):
+        if not hasattr(self, "admin_calc_vars"):
+            return
+        mapping = {
+            "admin_change_mgmt_fee": "change_mgmt_fee",
+            "admin_alloc1_amount": "alloc1_amount", "admin_alloc1_0c12": "alloc1_0c12", "admin_alloc1_0c11": "alloc1_0c11", "admin_alloc1_0c14": "alloc1_0c14",
+            "admin_alloc2_amount": "alloc2_amount", "admin_alloc2_0c12": "alloc2_0c12", "admin_alloc2_0c11": "alloc2_0c11", "admin_alloc2_0c14": "alloc2_0c14",
+            "admin_alloc3_amount": "alloc3_amount", "admin_alloc3_0c12": "alloc3_0c12", "admin_alloc3_0c11": "alloc3_0c11", "admin_alloc3_0c14": "alloc3_0c14",
+            "admin_alloc4_amount": "alloc4_amount", "admin_alloc4_0c12": "alloc4_0c12", "admin_alloc4_0c11": "alloc4_0c11", "admin_alloc4_0c14": "alloc4_0c14",
+        }
+        for db_key, var_key in mapping.items():
+            data[db_key] = self.admin_calc_vars.get(var_key, tk.StringVar()).get().strip()
 
     def build_execution_tab(self):
         self.add_page_edit_toggle(self.tab_execution)
@@ -2396,7 +4134,7 @@ class App(tk.Tk):
         ttk.Button(top, text="下一月", command=lambda: shift_month(1)).pack(side="left")
         ttk.Button(top, text="今天", command=lambda: (year_var.set(date.today().year), month_var.set(date.today().month), render_calendar())).pack(side="left", padx=8)
         cal_frame.pack()
-        ttk.Label(win, textvariable=selected_day_var, foreground="#1f4e79").pack(anchor="w", padx=12)
+        ttk.Label(win, textvariable=selected_day_var, foreground=OSX_ACCENT).pack(anchor="w", padx=12)
 
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
@@ -2409,7 +4147,7 @@ class App(tk.Tk):
             width=20
         ).grid(row=0, column=1, sticky="ew", pady=4)
         ttk.Label(form, text="內容").grid(row=1, column=0, sticky="ne", padx=(0, 6), pady=4)
-        content_text = tk.Text(form, height=5, width=48, wrap="word", font=("Microsoft JhengHei UI", 10))
+        content_text = tk.Text(form, height=5, width=48, wrap="word", font=("Microsoft JhengHei UI", 10), background=OSX_ENTRY_BG, foreground=OSX_TEXT, insertbackground=OSX_TEXT, relief="solid", bd=1)
         content_text.grid(row=1, column=1, sticky="ew", pady=4)
         ttk.Label(form, text="備註").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
         note_entry = ttk.Entry(form, textvariable=note_var, width=48)
@@ -2585,8 +4323,8 @@ class App(tk.Tk):
         budget_box = tk.LabelFrame(
             container,
             text="預算",
-            bg="#d9eaf7",
-            fg="#000000",
+            bg=OSX_BUDGET_BOOK_BG,
+            fg=OSX_TEXT,
             bd=2,
             relief="solid",
             labelanchor="n",
@@ -2597,8 +4335,8 @@ class App(tk.Tk):
         contract_box = tk.LabelFrame(
             container,
             text="契約",
-            bg="#d9ead3",
-            fg="#000000",
+            bg=OSX_CONTRACT_BOOK_BG,
+            fg=OSX_TEXT,
             bd=2,
             relief="solid",
             labelanchor="n",
@@ -2613,8 +4351,8 @@ class App(tk.Tk):
             box.grid_columnconfigure(0, weight=1)
         self.budget_book_trees = {}
         self.budget_book_sources = {}
-        self.create_budget_book_panel(budget_box, "budget", "讀入預算書", "#d9eaf7")
-        self.create_budget_book_panel(contract_box, "contract", "讀入預算書", "#d9ead3")
+        self.create_budget_book_panel(budget_box, "budget", "讀入預算書", OSX_BUDGET_BOOK_BG)
+        self.create_budget_book_panel(contract_box, "contract", "讀入預算書", OSX_CONTRACT_BOOK_BG)
 
     def create_budget_book_panel(self, parent, area, button_text, bg):
         parent.grid_rowconfigure(1, weight=1)
@@ -2718,7 +4456,7 @@ class App(tk.Tk):
 
         reason_box = ttk.LabelFrame(self.change_upper, text="變更事由", padding=8)
         reason_box.pack(fill="x", pady=4)
-        self.change_reason_text = tk.Text(reason_box, height=5, width=80, wrap="word", relief="solid", bd=1)
+        self.change_reason_text = tk.Text(reason_box, height=5, width=80, wrap="word", relief="solid", bd=1, background=OSX_ENTRY_BG, foreground=OSX_TEXT, insertbackground=OSX_TEXT)
         self.change_reason_text.pack(fill="x", expand=True)
         self.edit_widgets.append(self.change_reason_text)
 
@@ -2749,7 +4487,7 @@ class App(tk.Tk):
         self.change_select_combo.pack(side="left", padx=6)
         self.change_select_combo.bind("<<ComboboxSelected>>", lambda e: self.show_selected_change())
         ttk.Button(select_row, text="顯示", command=self.show_selected_change).pack(side="left")
-        self.change_summary = tk.Text(lower, height=8, wrap="word")
+        self.change_summary = tk.Text(lower, height=8, wrap="word", background=OSX_READONLY_BG, foreground=OSX_TEXT, insertbackground=OSX_TEXT, relief="solid", bd=1)
         self.change_summary.pack(fill="x", pady=(0, 6))
         self.change_budget_tree = EditableTree(lower, ["c1", "c2", "c3", "c4", "c5", "c6"], ["欄1", "欄2", "欄3", "欄4", "欄5", "欄6"], [120, 120, 120, 120, 120, 120], self.mark_dirty)
         self.change_budget_tree.pack(fill="both", expand=True)
@@ -2822,6 +4560,7 @@ class App(tk.Tk):
             getattr(self, "change_budget_source", ""),
         )
         self.refresh_change_select()
+        self.refresh_change_award_select()
         self.status_var.set(f"已儲存第 {change_no} 次預算變更")
 
     def refresh_change_select(self):
@@ -2945,7 +4684,7 @@ class App(tk.Tk):
             try:
                 w.configure(state="normal" if unlocked else "disabled")
                 if isinstance(w, tk.Text):
-                    w.configure(foreground="black" if unlocked else "#1f4e79")
+                    w.configure(foreground=OSX_TEXT)
             except tk.TclError:
                 pass
         if unlocked:
@@ -2956,6 +4695,7 @@ class App(tk.Tk):
                         widget.configure(state="readonly")
                     except tk.TclError:
                         pass
+        self.update_deposit_performance_manual_state()
         self.assign_tree_edit_guards()
         manual_var = getattr(self, "data_edit_enabled_var", None)
         if manual_var is not None and not manual_var.get():
@@ -3053,13 +4793,39 @@ class App(tk.Tk):
         total = 0.0
         if not hasattr(self, tree):
             return total
+        if tree == "payment_contract_tree":
+            return float(self.latest_contract_cumulative_billing())
+        if tree == "payment_other_tree":
+            idx = {field: i for i, field in enumerate(PAYMENT_OTHER_FIELDS)}
+            latest = self.latest_cumulative_by_period(getattr(self, tree).get_rows(), PAYMENT_OTHER_FIELDS, "cumulative_amount")
+            return float(latest)
+        if tree == "payment_admin_tree":
+            idx = {field: i for i, field in enumerate(PAYMENT_ADMIN_FIELDS)}
+            latest = self.latest_cumulative_by_period(getattr(self, tree).get_rows(), PAYMENT_ADMIN_FIELDS, "cumulative_amount")
+            return float(latest)
         for row in getattr(self, tree).get_rows():
             if len(row) >= 4:
                 total += self.safe_amount(row[3])
         return total
 
+    def latest_cumulative_by_period(self, rows, fields, cumulative_field):
+        if not rows:
+            return Decimal("0")
+        indexes = {field: idx for idx, field in enumerate(fields)}
+        prepared = []
+        for original_index, raw in enumerate(rows):
+            row = (list(raw) + [""] * len(fields))[:len(fields)]
+            prepared.append((original_index, row))
+        latest_row = sorted(prepared, key=lambda x: period_sort_key(x[1][indexes.get("period_no", 0)], x[0]))[-1][1]
+        return self.money_decimal(latest_row[indexes[cumulative_field]])
+
+    def latest_contract_cumulative_billing(self):
+        if not hasattr(self, "payment_contract_tree"):
+            return Decimal("0")
+        return self.latest_cumulative_by_period(self.payment_contract_tree.get_rows(), PAYMENT_CONTRACT_FIELDS, "cumulative_billing_amount")
+
     def money_text(self, value):
-        return f"{value:,.0f}元"
+        return self.format_money_value(value)
 
     def shift_month(self, delta):
         ym = self.cal_month_var.get().strip()
@@ -3078,6 +4844,86 @@ class App(tk.Tk):
             m = 1
         self.cal_month_var.set(f"{y:04d}-{m:02d}")
         self.render_calendar()
+
+
+    def update_database_path_display(self):
+        if hasattr(self, "database_path_var"):
+            self.database_path_var.set(self.database_path)
+
+    def _open_database_for_switch(self, path):
+        path = normalize_db_path(path)
+        if not path:
+            raise RuntimeError("資料庫路徑不可空白")
+        folder = os.path.dirname(path)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        new_db = DB(path)
+        return path, new_db
+
+    def switch_database(self, path, status_text="已切換資料庫"):
+        self.save_current()
+        old_db = self.db
+        old_path = self.database_path
+        try:
+            new_path, new_db = self._open_database_for_switch(path)
+            self.db = new_db
+            self.database_path = new_path
+            set_default_database_path(new_path)
+            self.current_project_id = None
+            self.project_password_hash = ""
+            self.edit_unlocked = True
+            self.dirty = False
+            self.undo_snapshot = None
+            self.last_state = None
+            self.update_database_path_display()
+            self.load_projects()
+            try:
+                old_db.conn.close()
+            except Exception:
+                pass
+            self.status_var.set(f"{status_text}：{new_path}")
+        except Exception as exc:
+            self.db = old_db
+            self.database_path = old_path
+            self.update_database_path_display()
+            messagebox.showerror("資料庫切換失敗", str(exc))
+
+    def select_database(self):
+        path = filedialog.askopenfilename(
+            title="選擇資料庫",
+            filetypes=[("TR_FxWork 資料庫", ("TRFxWork_db", "TR_FxWork.db", "*.db")), ("SQLite DB", "*.db"), ("所有檔案", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.execute("SELECT name FROM sqlite_master LIMIT 1").fetchall()
+        except Exception as exc:
+            messagebox.showerror("選擇資料庫失敗", f"這個檔案不是可讀取的 SQLite 資料庫：\n{exc}")
+            return
+        self.switch_database(path, "已選擇資料庫，並設為預設來源")
+
+    def new_database(self):
+        timestamp = timestamp_suffix()
+        path = filedialog.asksaveasfilename(
+            title="新增資料庫",
+            initialfile=f"{DB_FILE_NAME}_{timestamp}.db",
+            defaultextension=".db",
+            filetypes=[("SQLite DB", "*.db"), ("所有檔案", "*.*")]
+        )
+        if not path:
+            return
+        path = append_timestamp_suffix(path, prefix="_")
+        if os.path.exists(path):
+            ok = messagebox.askyesno("覆蓋資料庫", "檔案已存在，是否覆蓋並建立新的空白資料庫？")
+            if not ok:
+                return
+            try:
+                os.remove(path)
+            except OSError as exc:
+                messagebox.showerror("新增資料庫失敗", str(exc))
+                return
+        self.switch_database(path, "已新增資料庫，並設為預設來源")
 
     def load_projects(self):
         projects = self.db.projects()
@@ -3158,9 +5004,13 @@ class App(tk.Tk):
         self.apply_year_separators(self.workday_tree)
         self.weather_tree.set_rows([[r["day"], r["morning"], r["afternoon"], r["typhoon"], r["site"], r["note"]] for r in self.db.rows("weather", pid)])
         self.railway_tree.set_rows([["✓" if r["excluded"] else "", r["day"], r["note"]] for r in self.db.rows("railway", pid)])
-        self.payment_contract_tree.set_rows([[r["day"], r["item"], r["voucher_no"], r["amount"], r["note"]] for r in self.db.rows("payment_contract", pid)])
-        self.payment_other_tree.set_rows([[r["day"], r["item"], r["voucher_no"], r["amount"], r["note"]] for r in self.db.rows("payment_other", pid)])
-        self.payment_admin_tree.set_rows([[r["day"], r["item"], r["voucher_no"], r["amount"], r["note"]] for r in self.db.rows("payment_admin", pid)])
+        self.payment_contract_tree.set_rows(self.payment_contract_db_rows_to_tree(self.db.rows("payment_contract", pid)))
+        self.refresh_contract_payment_cumulatives(mark_dirty=False)
+        self.payment_other_tree.set_rows(self.payment_other_db_rows_to_tree(self.db.rows("payment_other", pid)))
+        self.refresh_payment_other_cumulatives(mark_dirty=False)
+        self.payment_admin_tree.set_rows(self.payment_admin_db_rows_to_tree(self.db.rows("payment_admin", pid)))
+        self.load_admin_setup_from_project(p)
+        self.refresh_payment_admin_cumulatives(mark_dirty=False)
         self.execution_tree.set_rows([
             [r["day"], r["record_type"], "\n".join(x for x in [r["subject"], r["content"]] if x), r["note"]]
             for r in self.db.rows("execution_records", pid)
@@ -3174,6 +5024,7 @@ class App(tk.Tk):
             rows, source = self.db.budget_book(pid, area)
             self.set_budget_book_rows(area, rows, source)
         self.refresh_change_select()
+        self.refresh_change_award_select()
         nums = self.db.change_numbers(pid)
         if nums:
             self.change_select_var.set(nums[-1])
@@ -3361,32 +5212,41 @@ class App(tk.Tk):
                 self.basic_vars["warranty_rate"].set("3%")
 
             budget_contract = self.safe_amount(self.basic_vars.get("budget_contract_amount", tk.StringVar()).get())
-            budget_outside = sum(
+            budget_air_pollution = self.safe_amount(self.basic_vars.get("budget_air_pollution_fee", tk.StringVar()).get())
+            budget_outside_without_air = sum(
                 self.safe_amount(self.basic_vars.get(key, tk.StringVar()).get())
                 for key in (
                     "budget_mgmt_fee", "budget_self_labor", "budget_self_material", "budget_spare_material",
-                    "budget_railway_material", "budget_supervision_fee", "budget_freight",
-                    "budget_air_pollution_fee", "budget_other"
+                    "budget_railway_material", "budget_supervision_fee", "budget_freight", "budget_other"
                 )
             )
-            budget_unfinished = budget_contract + budget_outside
+            # 未完工程：發包工程費預算金額 + 發包以外金額（空汙費除外）。
+            budget_unfinished = budget_contract + budget_outside_without_air
             budget_tax = budget_contract * 0.05
             budget_total = budget_contract + budget_tax
-            award_total = self.safe_amount(self.basic_vars.get("award_contract_total", tk.StringVar()).get())
-            award_net = award_total / 1.05 if award_total else 0
-            award_tax = award_total - award_net if award_total else 0
-            award_outside = sum(
+
+            award_net = self.safe_amount(self.basic_vars.get("award_contract_amount", tk.StringVar()).get())
+            award_tax = award_net * 0.05
+            award_total = award_net + award_tax
+            award_air_pollution = self.safe_amount(self.basic_vars.get("award_air_pollution_fee", tk.StringVar()).get())
+            award_outside_without_air = sum(
                 self.safe_amount(self.basic_vars.get(key, tk.StringVar()).get())
                 for key in (
                     "award_mgmt_fee", "award_self_labor", "award_self_material", "award_spare_material",
-                    "award_railway_material", "award_supervision_fee", "award_freight",
-                    "award_air_pollution_fee", "award_other"
+                    "award_railway_material", "award_supervision_fee", "award_freight", "award_other"
                 )
             )
-            award_unfinished = award_net + award_outside
+            # 未完工程：發包工程費發包契約金額 + 發包以外金額（空汙費除外）。
+            award_unfinished = award_net + award_outside_without_air
             award_base = self.safe_amount(self.basic_vars.get("award_base_price", tk.StringVar()).get())
             perf_rate = self.safe_amount(self.basic_vars.get("performance_bond_rate", tk.StringVar()).get()) / 100
             warranty_rate = self.safe_amount(self.basic_vars.get("warranty_rate", tk.StringVar()).get()) / 100
+            manual_performance_deposit = self.basic_vars.get("deposit_performance_manual", tk.StringVar(value="0")).get() == "1"
+            performance_deposit_value = (
+                self.safe_amount(self.basic_vars.get("deposit_performance", tk.StringVar()).get())
+                if manual_performance_deposit
+                else award_total * perf_rate
+            )
             acceptance_date = parse_date(self.basic_vars.get("actual_acceptance_date", tk.StringVar()).get())
             warranty_years = self.safe_amount(self.basic_vars.get("warranty_years", tk.StringVar()).get())
             warranty_end = add_years(acceptance_date, warranty_years) - timedelta(days=1) if acceptance_date and warranty_years else None
@@ -3396,12 +5256,12 @@ class App(tk.Tk):
                 "budget_contract_total": budget_total,
                 "budget_input_tax": budget_tax,
                 "budget_unfinished_amount": budget_unfinished,
-                "budget_total_amount": budget_unfinished + budget_tax,
-                "award_contract_amount": award_net,
+                "budget_total_amount": budget_unfinished + budget_air_pollution + budget_tax,
                 "award_contract_tax": award_tax,
+                "award_contract_total": award_total,
                 "award_input_tax": award_tax,
                 "award_unfinished_amount": award_unfinished,
-                "award_total_amount": award_unfinished + award_tax,
+                "award_total_amount": award_unfinished + award_air_pollution + award_tax,
                 "contract_budget_net": budget_contract,
                 "contract_budget_tax": budget_tax,
                 "contract_budget_total": budget_total,
@@ -3410,16 +5270,21 @@ class App(tk.Tk):
                 "contract_award_total": award_total,
                 "labor_budget": self.safe_amount(self.basic_vars.get("budget_labor", tk.StringVar()).get()),
                 "labor_award": self.safe_amount(self.basic_vars.get("award_labor", tk.StringVar()).get()),
-                "deposit_performance": award_total * perf_rate,
-                "deposit_total": self.safe_amount(self.basic_vars.get("deposit_difference", tk.StringVar()).get()) + (award_total * perf_rate),
+                "deposit_total": self.safe_amount(self.basic_vars.get("deposit_difference", tk.StringVar()).get()) + performance_deposit_value,
                 "warranty_deposit": award_total * warranty_rate,
                 "final_contract_amount": award_total,
             }
+            if not manual_performance_deposit:
+                auto_totals["deposit_performance"] = performance_deposit_value
+
             for key, value in auto_totals.items():
                 if key in self.basic_vars:
                     text = self.money_text(value) if value else ""
                     if self.basic_vars[key].get() != text:
                         self.basic_vars[key].set(text)
+            self.update_deposit_performance_manual_state()
+            self.refresh_admin_management_fee_source()
+            self.refresh_admin_setup_totals()
 
             ratio_values = {
                 "award_contract_budget_ratio": self.percent_text(award_total, budget_total),
@@ -3457,6 +5322,8 @@ class App(tk.Tk):
             return
 
         data = {k: v.get().strip() for k, v in self.basic_vars.items()}
+        self.collect_admin_setup_to_project_data(data)
+        self.save_current_change_award_fields()
         if hasattr(self, "project_description_text"):
             data["project_description"] = self.project_description_text.get("1.0", "end-1c").strip()
         if hasattr(self, "warranty_note_text"):
@@ -3500,21 +5367,9 @@ class App(tk.Tk):
         ]
         self.db.replace_rows("railway", self.current_project_id, railway)
 
-        for table_name, tree_attr in [
-            ("payment_contract", "payment_contract_tree"),
-            ("payment_other", "payment_other_tree"),
-            ("payment_admin", "payment_admin_tree"),
-        ]:
-            rows = []
-            for r in getattr(self, tree_attr).get_rows():
-                rows.append({
-                    "day": r[0] if len(r) > 0 else "",
-                    "item": r[1] if len(r) > 1 else "",
-                    "voucher_no": r[2] if len(r) > 2 else "",
-                    "amount": self.safe_amount(r[3] if len(r) > 3 else 0),
-                    "note": r[4] if len(r) > 4 else "",
-                })
-            self.db.replace_rows(table_name, self.current_project_id, rows)
+        self.db.replace_rows("payment_contract", self.current_project_id, self.payment_contract_tree_rows_to_db())
+        self.db.replace_rows("payment_other", self.current_project_id, self.payment_other_tree_rows_to_db())
+        self.db.replace_rows("payment_admin", self.current_project_id, self.payment_admin_tree_rows_to_db())
 
         execution_rows = []
         for r in self.execution_tree.get_rows():
@@ -3547,8 +5402,12 @@ class App(tk.Tk):
             has_change_data = has_change_data or bool(self.change_reason_text.get("1.0", "end-1c").strip())
             has_change_data = has_change_data or bool(self.change_demand_tree.get_rows() or self.change_confirm_tree.get_rows() or self.change_budget_tree.get_rows())
             if change_no and has_change_data:
-                fields = {k: v.get().strip() for k, v in self.change_vars.items()}
+                existing_record = self.db.change_record(self.current_project_id, change_no)
+                fields = dict(existing_record.get("fields", {})) if existing_record else {}
+                fields.update({k: v.get().strip() for k, v in self.change_vars.items()})
                 fields["reason"] = self.change_reason_text.get("1.0", "end-1c")
+                if hasattr(self, "change_award_vars") and self.change_award_select_var.get().strip() == change_no:
+                    fields.update({k: v.get().strip() for k, v in self.change_award_vars.items()})
                 self.db.save_change_record(
                     self.current_project_id,
                     change_no,
@@ -3559,6 +5418,7 @@ class App(tk.Tk):
                     getattr(self, "change_budget_source", ""),
                 )
                 self.refresh_change_select()
+                self.refresh_change_award_select()
 
         self.db.set_setting("last_project_id", self.current_project_id)
         self.dirty = False
@@ -3567,23 +5427,24 @@ class App(tk.Tk):
 
     def backup_database(self):
         self.save_current()
-        folder = filedialog.askdirectory(title="選擇備份儲存資料夾")
+        folder = filedialog.askdirectory(title="選擇資料庫備份儲存資料夾")
         if not folder:
             return
-        base = simpledialog.askstring("備份檔名", "請輸入備份檔名前綴：", initialvalue="TR_FxWork_備份", parent=self)
-        if not base:
-            return
-        safe_base = "".join(ch if ch not in r'\/:*?"<>|' else "_" for ch in base.strip()) or "TR_FxWork_備份"
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        out_path = os.path.join(folder, f"{safe_base}_{timestamp}.zip")
+        timestamp = timestamp_suffix()
+        source_stem = os.path.splitext(os.path.basename(self.database_path))[0] or "TRFxWork_db"
+        safe_base = "".join(ch if ch not in r'\/:*?"<>|' else "_" for ch in source_stem)
+        out_path = os.path.join(folder, f"{safe_base}BK{timestamp}.zip")
         tmp_db = os.path.join(tempfile.gettempdir(), f"TR_FxWork_backup_{timestamp}.db")
         try:
-            with sqlite3.connect(DB_FILE) as src, sqlite3.connect(tmp_db) as dst:
+            with sqlite3.connect(self.database_path) as src, sqlite3.connect(tmp_db) as dst:
                 src.backup(dst)
             with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(tmp_db, arcname=DB_FILE_NAME)
-                zf.writestr("README_備份說明.txt", f"臺鐵監造紀錄小本資料庫備份\n備份時間：{timestamp}\n")
-            messagebox.showinfo("備份完成", f"已完成備份：\n{out_path}")
+                zf.write(tmp_db, arcname=f"{safe_base}BK{timestamp}.db")
+                zf.writestr(
+                    "README_備份說明.txt",
+                    f"臺鐵監造紀錄小本資料庫備份\n備份時間：{timestamp}\n資料庫來源：{self.database_path}\n備份檔名規則：原資料庫檔名 + BKYYYYMMDDHHMMSS\n"
+                )
+            messagebox.showinfo("備份完成", f"已完成資料庫備份：\n{out_path}")
         except Exception as exc:
             messagebox.showerror("備份失敗", str(exc))
         finally:
@@ -3598,15 +5459,16 @@ class App(tk.Tk):
         folder = filedialog.askdirectory(title="選擇異地備份儲存資料夾")
         if not folder:
             return
-        timestamp = datetime.now().strftime("%Y%m%d%H%M")
-        out_path = os.path.join(folder, f"TR_FxWork_backup_{timestamp}.zip")
+        timestamp = timestamp_suffix()
+        source_stem = os.path.splitext(os.path.basename(self.database_path))[0] or "TRFxWork_db"
+        out_path = os.path.join(folder, f"{source_stem}BK{timestamp}.zip")
         tmp_db = os.path.join(tempfile.gettempdir(), f"TR_FxWork_backup_{timestamp}.db")
         try:
-            with sqlite3.connect(DB_FILE) as src, sqlite3.connect(tmp_db) as dst:
+            with sqlite3.connect(self.database_path) as src, sqlite3.connect(tmp_db) as dst:
                 src.backup(dst)
             with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
                 zf.write(tmp_db, arcname=DB_FILE_NAME)
-                zf.writestr("README_異地備份說明.txt", f"TR_FxWork 異地備份\n備份時間：{timestamp}\n")
+                zf.writestr("README_異地備份說明.txt", f"TR_FxWork 異地備份\n備份時間：{timestamp}\n資料庫來源：{self.database_path}\n")
             messagebox.showinfo("異地備份完成", f"已完成異地備份：\n{out_path}")
         except Exception as exc:
             messagebox.showerror("異地備份失敗", str(exc))
@@ -3646,13 +5508,14 @@ class App(tk.Tk):
             "planned_acceptance_date": "預定驗收日", "actual_acceptance_date": "實際驗收日",
             "settlement_date": "決算日", "warranty_years": "保固年限", "warranty_end_date": "保固結束日",
             "warranty_note": "保固備註", "performance_bond_rate": "履保金比例",
+            "deposit_performance_manual": "履約保證金手動修改", "performance_bond_type": "履保金型式", "warranty_bond_type": "保固金型式",
             "contract_budget_net": "發包工程費-預算(未稅)", "contract_award_net": "發包工程費-決標(未稅)",
             "contract_budget_tax": "發包工程費-稅金(預算)", "contract_award_tax": "發包工程費-稅金(決標)",
             "contract_budget_total": "發包工程費-預算(含稅)", "contract_award_total": "發包工程費-決標(契約金額含稅)",
             "labor_budget": "包工費-預算", "labor_award": "包工費-決標",
             "deposit_difference": "差額保證金", "deposit_performance": "履約保證金", "deposit_total": "保證金總額",
             "final_contract_amount": "竣工發包工程費", "warranty_rate": "保固金比例", "warranty_deposit": "保固保證金",
-            "budget_total_amount": "總工程預算-總預算", "budget_unfinished_amount": "總工程預算-未完工程",
+            "budget_total_amount": "總工程預算-總預算(含稅)", "budget_unfinished_amount": "總工程預算-未完工程",
             "budget_input_tax": "總工程預算-進項稅額", "budget_contract_amount": "預算發包工程費-預算金額",
             "budget_contract_tax": "預算發包工程費-稅金", "budget_contract_total": "預算發包工程費-預算總計(含稅)",
             "budget_labor": "預算包工費-預算", "budget_mgmt_fee": "預算發包以外-工程管理費",
@@ -3660,9 +5523,9 @@ class App(tk.Tk):
             "budget_spare_material": "預算發包以外-路備材料費", "budget_railway_material": "預算發包以外-路購材料費",
             "budget_supervision_fee": "預算發包以外-監理費", "budget_freight": "預算發包以外-運雜費",
             "budget_air_pollution_fee": "預算發包以外-空汙費", "budget_other": "預算發包以外-其他",
-            "award_total_amount": "總工程費用-總預算", "award_unfinished_amount": "總工程費用-未完工程",
+            "award_total_amount": "總工程費用-總預算(含稅)", "award_unfinished_amount": "總工程費用-未完工程",
             "award_input_tax": "總工程費用-進項稅額", "award_contract_amount": "決標發包工程費-發包契約金額",
-            "award_contract_tax": "決標發包工程費-營業稅", "award_contract_total": "決標發包工程費-決標金額",
+            "award_contract_tax": "決標發包工程費-營業稅", "award_contract_total": "決標發包工程費-契約金額總計(含稅)",
             "award_base_price": "決標發包工程費-底價", "award_contract_budget_ratio": "決標/預算",
             "award_contract_base_ratio": "決標/底價", "award_base_budget_ratio": "底價/預算",
             "award_labor": "決標包工費-發包", "award_mgmt_fee": "決標發包以外-工程管理費",
@@ -3689,7 +5552,7 @@ class App(tk.Tk):
 
     def table_page_export_rows(self, page_name):
         tree = self.exportable_pages()[page_name]
-        return [[tree.tree.heading(col)["text"] for col in tree.columns]] + tree.get_rows()
+        return [list(getattr(tree, "headings", []))] + tree.get_rows()
 
     def export_page_excel(self):
         self.save_current()
@@ -3747,7 +5610,8 @@ class App(tk.Tk):
             "發包工程費-稅金(預算)": "contract_budget_tax", "發包工程費-稅金(決標)": "contract_award_tax",
             "發包工程費-預算(含稅)": "contract_budget_total", "發包工程費-決標(契約金額含稅)": "contract_award_total",
             "包工費-預算": "labor_budget", "包工費-決標": "labor_award",
-            "差額保證金": "deposit_difference", "履約保證金": "deposit_performance", "保證金總額": "deposit_total",
+            "差額保證金": "deposit_difference", "履約保證金": "deposit_performance", "履約保證金手動修改": "deposit_performance_manual",
+            "履保金型式": "performance_bond_type", "保固金型式": "warranty_bond_type", "保證金總額": "deposit_total",
             "竣工發包工程費": "final_contract_amount", "保固金比例": "warranty_rate", "保固保證金": "warranty_deposit",
         }
         label_to_key.update({
@@ -3755,6 +5619,8 @@ class App(tk.Tk):
             "預定驗收日": "planned_acceptance_date", "實際驗收日": "actual_acceptance_date",
             "決算日": "settlement_date", "保固年限": "warranty_years", "保固結束日": "warranty_end_date",
             "保固備註": "warranty_note", "履保金比例": "performance_bond_rate",
+            "總工程預算-總預算(含稅)": "budget_total_amount", "總工程費用-總預算(含稅)": "award_total_amount",
+            "決標發包工程費-契約金額總計(含稅)": "award_contract_total",
             "總工程預算-總預算": "budget_total_amount", "總工程預算-未完工程": "budget_unfinished_amount",
             "總工程預算-進項稅額": "budget_input_tax", "預算發包工程費-預算金額": "budget_contract_amount",
             "預算發包工程費-稅金": "budget_contract_tax", "預算發包工程費-預算總計(含稅)": "budget_contract_total",
@@ -3775,6 +5641,8 @@ class App(tk.Tk):
             "決標發包以外-空汙費": "award_air_pollution_fee", "決標發包以外-其他": "award_other",
         })
         label_to_key.update({
+            "總工程預算-總預算": "budget_total_amount", "總工程費用-總預算": "award_total_amount",
+            "決標發包工程費-決標金額": "award_contract_total",
             "預算內容-總預算": "budget_total_amount", "預算內容-未完工程": "budget_unfinished_amount",
             "預算內容-進項稅額": "budget_input_tax",
             "決標內容-總預算": "award_total_amount", "決標內容-未完工程": "award_unfinished_amount",
@@ -3863,7 +5731,7 @@ class App(tk.Tk):
             "workdays": ["day", "name"],
             "weather": ["day", "morning", "afternoon", "typhoon", "site", "note"],
             "railway": ["day", "note"],
-            "payment_contract": ["day", "item", "voucher_no", "amount", "note"],
+            "payment_contract": ["day", "item", "voucher_no", "amount", "note"] + PAYMENT_CONTRACT_FIELDS,
             "payment_other": ["day", "item", "voucher_no", "amount", "note"],
             "payment_admin": ["day", "item", "voucher_no", "amount", "note"],
             "execution_records": ["day", "record_type", "subject", "content", "note"],
@@ -3971,6 +5839,10 @@ class App(tk.Tk):
 
     def on_close(self):
         self.save_current()
+        try:
+            self.db.conn.close()
+        except Exception:
+            pass
         self.destroy()
 
     def weather_text_map(self):
@@ -4041,14 +5913,15 @@ class App(tk.Tk):
         cell_w = max(50, (width - left_w - right_pad) / 7)
 
         colors = {
-            "normal_date": "#fff2cc",      # 粉黃色
-            "weekend": "#f4cccc",          # 紅粉色
-            "holiday": "#d9ead3",          # 粉綠色
-            "transport": "#ead1dc",        # 粉棕色
-            "weather": "#ead1dc",
+            "normal_date": "#d9edf7",      # 週一到週五日期底色：粉藍色
+            "weekend": "#f4cccc",          # 週六週日日期底色：粉紅色
+            "holiday_date": "#fce4d6",     # 遇有假期日期底色：粉橘色
+            "holiday": "#fce4d6",          # 假日列提示
+            "transport": "#e6e6e6",        # 疏運/雨天
+            "weather": "#e6e6e6",
             "white": "#ffffff",
-            "grid": "#888888",
-            "header": "#ddebf7",
+            "grid": "#000000",
+            "header": "#ffffff",
         }
 
         cal = calendar.Calendar(firstweekday=0)
@@ -4120,6 +5993,8 @@ class App(tk.Tk):
                 x0 = left_w + di * cell_w
                 in_month = d.month == m
                 alpha_fill = colors["weekend"] if d.weekday() >= 5 else colors["normal_date"]
+                if in_month and d in holidays:
+                    alpha_fill = colors["holiday_date"]
                 if not in_month:
                     alpha_fill = "#eeeeee"
 
@@ -4170,7 +6045,7 @@ class App(tk.Tk):
 
         c.create_text(
             10, note_y,
-            text="說明：週六週日紅粉色；假日粉綠色；疏運與雨天粉棕色；資料關閉前與編輯中會自動儲存。",
+            text="說明：週一到週五日期粉藍色；週六週日日期粉紅色；遇假期日期粉橘色；資料關閉前與編輯中會自動儲存。",
             anchor="sw",
             font=("Microsoft JhengHei UI", note_font_size)
         )
