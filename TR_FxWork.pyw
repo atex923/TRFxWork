@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-KAGAMI 臺鐵工程本本 V0.3.3.2
+KAGAMI 臺鐵工程本本 V0.3.4.3
 - Python 標準函式庫版本：tkinter + sqlite3
 - 關閉前自動儲存
 - 可建立多個工程
 - 開啟時自動載入上次編輯工程
-- 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、工程執行紀錄表
+- 基本資料、假期表、晴雨表、鐵路疏運表、週曆總表、計價資料、會議記錄表
 - V0.2.6.3：第一分頁保證金新增履約保證金手動修改與保證金型式欄位。
 - V0.2.6.7：加寬第一分頁預算/契約金額區塊指定金額欄位，可輸入十億元。
 - V0.3.0：改黑白高對比配色，新增選擇/新增資料庫與預設資料庫來源記憶。
@@ -16,6 +16,13 @@ KAGAMI 臺鐵工程本本 V0.3.3.2
 - V0.3.3：摘要金額來源調整、第五/第六分頁計價欄位重整、第一分頁新增變更後契約金額。
 - V0.3.3.1：修正第五/第六分頁既有資料編輯，並新增第六分頁累計稅金。
 - V0.3.3.2：第六分頁可支用額度超額提示改為可支用金額紅字加粗。
+- V0.3.3.3：晴雨表備註 -1 強制施工日曆不計工期，施工日曆註記加入天氣與場地內容。
+- V0.3.3.4：施工日曆晴雨註記僅顯示有內容的天氣/場地，並移除天氣與場地前綴詞。
+- V0.3.3.5：施工日曆晴雨註記過濾晴雨表中的 0.0 / 0 / 空值。
+- V0.3.4：新增工程進度估算分頁，依發包契約金額與進度百分比自動計算施作金額。
+- V0.3.4.1：修正疏運表變更後施工日曆即時同步，並顯示疏運名稱。
+- V0.3.4.2：回復動作歷史擴充為最多 10 次。
+- V0.3.4.3：列印設定強化，會議記錄表同步工程大事記，並調整工程名稱與大事記排序。
 """
 
 import os
@@ -29,14 +36,15 @@ import re
 import sys
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
+import html
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 
-APP_VERSION = "V0.3.3.2"
-APP_RELEASE_SUMMARY = "第六分頁可支用額度超額提示改為可支用金額紅字加粗。"
+APP_VERSION = "V0.3.4.3"
+APP_RELEASE_SUMMARY = "列印設定強化，會議記錄表同步工程大事記，並調整工程名稱與大事記排序。"
 APP_TITLE = f"KAGAMI 臺鐵工程本本 {APP_VERSION}"
 
 
@@ -241,6 +249,18 @@ PAYMENT_ADMIN_MONEY_FIELDS = {
     "tax_amount", "cumulative_tax_amount", "current_amount", "cumulative_amount",
 }
 PAYMENT_ADMIN_CUMULATIVE_FIELDS = {"cumulative_tax_amount", "current_amount", "cumulative_amount"}
+
+
+PROGRESS_ESTIMATE_FIELDS = [
+    "item_no", "month", "estimated_progress", "estimated_amount", "actual_progress", "actual_amount",
+]
+PROGRESS_ESTIMATE_HEADINGS = [
+    "項次", "月份", "預估進度", "預估施作金額", "實際進度", "實際施作金額",
+]
+PROGRESS_ESTIMATE_WIDTHS = [90, 120, 120, 170, 120, 170]
+PROGRESS_ESTIMATE_PERCENT_FIELDS = {"estimated_progress", "actual_progress"}
+PROGRESS_ESTIMATE_MONEY_FIELDS = {"estimated_amount", "actual_amount"}
+PROGRESS_ESTIMATE_READONLY_FIELDS = {"estimated_amount", "actual_amount"}
 
 CHANGE_AWARD_FIELDS = [
     "change_award_total_amount", "change_award_unfinished_amount", "change_award_input_tax",
@@ -636,6 +656,18 @@ class DB:
         )
         """)
         c.execute("""
+        CREATE TABLE IF NOT EXISTS progress_estimates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER,
+            item_no TEXT DEFAULT '',
+            month TEXT DEFAULT '',
+            estimated_progress TEXT DEFAULT '',
+            estimated_amount TEXT DEFAULT '',
+            actual_progress TEXT DEFAULT '',
+            actual_amount TEXT DEFAULT ''
+        )
+        """)
+        c.execute("""
         CREATE TABLE IF NOT EXISTS execution_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER,
@@ -716,6 +748,11 @@ class DB:
                 c.execute(f"ALTER TABLE payment_admin ADD COLUMN {field} TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass
+        for field in PROGRESS_ESTIMATE_FIELDS:
+            try:
+                c.execute(f"ALTER TABLE progress_estimates ADD COLUMN {field} TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass
         try:
             c.execute("ALTER TABLE bids ADD COLUMN award_date TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -762,7 +799,7 @@ class DB:
     def delete_project(self, pid):
         for table in (
             "bids", "weather",
-            "payment_contract", "payment_other", "payment_admin",
+            "payment_contract", "payment_other", "payment_admin", "progress_estimates",
             "execution_records", "execution_status", "project_milestones",
             "holiday_project_excludes", "workday_project_excludes", "railway_project_excludes",
             "budget_books", "change_records"
@@ -860,6 +897,8 @@ class DB:
             return self.shared_railway(pid)
         if table == "project_milestones":
             return self.conn.execute("SELECT * FROM project_milestones WHERE project_id=? ORDER BY start_date, id", (pid,)).fetchall()
+        if table == "progress_estimates":
+            return self.conn.execute("SELECT * FROM progress_estimates WHERE project_id=? ORDER BY id", (pid,)).fetchall()
         return self.conn.execute(f"SELECT * FROM {table} WHERE project_id=? ORDER BY day, id", (pid,)).fetchall()
 
     def bids(self, pid):
@@ -1009,6 +1048,14 @@ class DB:
                 ]
                 values.extend(r.get(field, "") for field in PAYMENT_ADMIN_FIELDS)
                 self.conn.execute(sql, values)
+        elif table == "progress_estimates":
+            cols = ["project_id"] + PROGRESS_ESTIMATE_FIELDS
+            placeholders = ",".join("?" for _ in cols)
+            sql = f"INSERT INTO progress_estimates({','.join(cols)}) VALUES({placeholders})"
+            for r in rows:
+                values = [pid]
+                values.extend(r.get(field, "") for field in PROGRESS_ESTIMATE_FIELDS)
+                self.conn.execute(sql, values)
         elif table == "execution_records":
             for r in rows:
                 self.conn.execute(
@@ -1065,6 +1112,8 @@ class EditableTree(ttk.Frame):
         ttk.Button(btns, text="新增一列", command=self.add_command).pack(side="left", padx=3)
         ttk.Button(btns, text="編輯選取列", command=self.run_edit_command).pack(side="left", padx=3)
         ttk.Button(btns, text="刪除選取列", command=self.delete_row).pack(side="left", padx=3)
+        ttk.Button(btns, text="上移", command=lambda: self.move_selected(-1)).pack(side="left", padx=3)
+        ttk.Button(btns, text="下移", command=lambda: self.move_selected(1)).pack(side="left", padx=3)
         self.tree.bind("<Double-1>", self.run_edit_command)
         self.tree.bind("<Button-1>", self.on_tree_click)
 
@@ -1196,6 +1245,30 @@ class EditableTree(ttk.Frame):
         for item in self.tree.selection():
             self.tree.delete(item)
         self.changed()
+
+    def move_selected(self, delta):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        selected = list(self.tree.selection())
+        if not selected:
+            return
+        children = list(self.tree.get_children(""))
+        items = selected if delta < 0 else list(reversed(selected))
+        moved = False
+        for item in items:
+            index = children.index(item)
+            new_index = index + delta
+            if new_index < 0 or new_index >= len(children):
+                continue
+            self.tree.move(item, "", new_index)
+            children = list(self.tree.get_children(""))
+            moved = True
+        if moved:
+            self.tree.selection_set(selected)
+            self.tree.focus(selected[0])
+            self.tree.see(selected[0])
+            self.changed()
 
     def set_rows(self, rows):
         self.tree.delete(*self.tree.get_children())
@@ -1534,7 +1607,7 @@ class App(tk.Tk):
         self.project_password_hash = ""
         self.edit_unlocked = True
         self.edit_widgets = []
-        self.undo_snapshot = None
+        self.undo_history = []
         self.last_state = None
         self.restoring = False
         self.recalculating = False
@@ -1703,11 +1776,16 @@ class App(tk.Tk):
         top_select = ttk.Frame(self, padding=8)
         top_select.pack(fill="x")
 
-        ttk.Label(top_select, text="工程名稱：").pack(side="left")
-        self.project_combo = ttk.Combobox(top_select, state="readonly", width=55)
-        self.project_combo.pack(side="left", padx=5)
+        project_select = ttk.Frame(self, padding=(8, 8, 8, 0))
+        project_select.pack(fill="x")
+        ttk.Label(project_select, text="工程名稱：").pack(side="left")
+        self.project_combo = ttk.Combobox(project_select, state="readonly", width=55)
+        self.project_combo.pack(side="left", fill="x", expand=True, padx=5)
         self.project_combo.bind("<<ComboboxSelected>>", self.on_project_selected)
-        ttk.Button(top_select, text="新增工程", command=self.new_project).pack(side="left", padx=5)
+        ttk.Button(project_select, text="新增工程", command=self.new_project).pack(side="left", padx=5)
+
+        top_select = ttk.Frame(self, padding=8)
+        top_select.pack(fill="x")
         ttk.Button(top_select, text="立即儲存", command=self.save_current).pack(side="left", padx=5)
         ttk.Button(top_select, text="回復上一個動作", command=self.undo_last_action).pack(side="left", padx=5)
 
@@ -1766,6 +1844,7 @@ class App(tk.Tk):
         self.tab_payment_contract = ttk.Frame(self.nb, padding=8)
         self.tab_payment_other = ttk.Frame(self.nb, padding=8)
         self.tab_payment_admin = ttk.Frame(self.nb, padding=8)
+        self.tab_progress_estimate = ttk.Frame(self.nb, padding=8)
         self.tab_execution = ttk.Frame(self.nb, padding=8)
         self.tab_milestone = ttk.Frame(self.nb, padding=8)
         self.tab_budget_data = ttk.Frame(self.nb, padding=8)
@@ -1800,10 +1879,11 @@ class App(tk.Tk):
         self.nb.add(self.tab_basic, text="工程基本資料")
         self.nb.add(self.tab_day_tables, text="假期/晴雨/疏運表")
         self.nb.add(self.tab_calendar, text="施工日曆")
+        self.nb.add(self.tab_progress_estimate, text="工程進度估算")
         self.nb.add(self.tab_payment_contract, text="發包工程費計價")
         self.nb.add(self.tab_payment_other, text="發包以外計價")
         self.nb.add(self.tab_payment_admin, text="管理費計價")
-        self.nb.add(self.tab_execution, text="工程執行紀錄表")
+        self.nb.add(self.tab_execution, text="會議記錄表")
         self.nb.add(self.tab_milestone, text="工程大事記")
         self.nb.add(self.tab_budget_data, text="預算資料")
         self.nb.add(self.tab_change_data, text="變更資料")
@@ -1813,6 +1893,7 @@ class App(tk.Tk):
         self.build_weather_tab()
         self.build_railway_tab()
         self.build_calendar_tab()
+        self.build_progress_estimate_tab()
         self.build_payment_tabs()
         self.build_execution_tab()
         self.build_milestone_tab()
@@ -1847,6 +1928,16 @@ class App(tk.Tk):
         ).pack(anchor="w")
         return holder
 
+    def push_undo_snapshot(self, state):
+        """保留最多 10 次可回復動作。"""
+        if not state:
+            return
+        if self.undo_history and self.undo_history[-1] == state:
+            return
+        self.undo_history.append(state)
+        if len(self.undo_history) > 10:
+            self.undo_history = self.undo_history[-10:]
+
     def mark_dirty(self, *_):
         if not self.loading and not self.restoring:
             if not self.can_edit():
@@ -1859,7 +1950,7 @@ class App(tk.Tk):
             if not self.recalculating:
                 current_state = self.capture_state()
                 if self.last_state is not None and current_state != self.last_state:
-                    self.undo_snapshot = self.last_state
+                    self.push_undo_snapshot(self.last_state)
                 self.last_state = current_state
             self.dirty = True
             self.recalculate()
@@ -1882,7 +1973,7 @@ class App(tk.Tk):
             state["basic"]["warranty_note"] = self.warranty_note_text.get("1.0", "end-1c")
         for name in [
             "bid_tree", "holiday_tree", "workday_tree", "weather_tree", "railway_tree",
-            "payment_contract_tree", "payment_other_tree", "payment_admin_tree",
+            "payment_contract_tree", "payment_other_tree", "payment_admin_tree", "progress_estimate_tree",
             "execution_tree", "milestone_tree"
         ]:
             if hasattr(self, name):
@@ -1920,14 +2011,14 @@ class App(tk.Tk):
         if not self.can_edit():
             messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
             return
-        if not self.undo_snapshot:
-            self.status_var.set("目前沒有可回復的上一個動作")
+        if not self.undo_history:
+            self.status_var.set("目前沒有可回復的動作")
             return
-        snapshot = self.undo_snapshot
-        self.undo_snapshot = None
+        snapshot = self.undo_history.pop()
         self.restore_state(snapshot)
         self.save_current()
-        self.status_var.set("已回復上一個動作並自動儲存")
+        remain = len(self.undo_history)
+        self.status_var.set(f"已回復上一個動作並自動儲存，尚可回復 {remain} 次")
 
     def schedule_auto_save(self):
         if self.loading or self.restoring:
@@ -2003,6 +2094,7 @@ class App(tk.Tk):
         ttk.Button(box, text="資料庫打包備份", command=self.backup_database).pack(fill="x", pady=4)
         ttk.Button(box, text="異地備份資料庫", command=self.backup_database_offsite).pack(fill="x", pady=4)
         ttk.Button(box, text="匯入備份", command=self.import_database).pack(fill="x", pady=4)
+        ttk.Button(box, text="列印設定/產生列印檔", command=self.open_print_dialog).pack(fill="x", pady=4)
         ttk.Button(box, text="匯出分頁檔案", command=self.export_page_excel).pack(fill="x", pady=4)
         ttk.Button(box, text="匯入 Excel 到分頁", command=self.import_page_excel).pack(fill="x", pady=4)
         ttk.Button(box, text="刪除工程", command=self.delete_current_project).pack(fill="x", pady=4)
@@ -2412,52 +2504,53 @@ class App(tk.Tk):
             command=self.apply_edit_lock_state
         ).grid(row=1, column=0, columnspan=8, sticky="w", padx=3, pady=2)
 
-        self.entry(form, 2, 0, "工程名稱", "name", 18)
-        self.entry(form, 2, 2, "工程執行號", "exec_no", 14)
-        self.entry(form, 2, 4, "動支請示單號", "budget_no", 14)
-        self.entry(form, 2, 6, "採購契約號碼", "purchase_contract_no", 14)
-        self.readonly_entry(form, 3, 0, "決標日期", "award_date", 14)
-        self.entry(form, 3, 2, "簽約日期", "contract_date", 14, date_picker=True)
-        self.entry(form, 3, 4, "預訂開工日", "planned_start", 14, date_picker=True)
-        self.entry(form, 3, 6, "實際開工日", "actual_start", 14, date_picker=True)
-        self.entry(form, 4, 0, "契約工期", "contract_days", 10)
-        ttk.Label(form, text="工期類型").grid(row=4, column=2, sticky="e", padx=3, pady=2)
+        name_entry = self.entry(form, 2, 0, "工程名稱", "name", 48)
+        name_entry.grid_configure(columnspan=7)
+        self.entry(form, 3, 0, "工程執行號", "exec_no", 14)
+        self.entry(form, 3, 2, "動支請示單號", "budget_no", 14)
+        self.entry(form, 3, 4, "採購契約號碼", "purchase_contract_no", 14)
+        self.readonly_entry(form, 4, 0, "決標日期", "award_date", 14)
+        self.entry(form, 4, 2, "簽約日期", "contract_date", 14, date_picker=True)
+        self.entry(form, 4, 4, "預訂開工日", "planned_start", 14, date_picker=True)
+        self.entry(form, 4, 6, "實際開工日", "actual_start", 14, date_picker=True)
+        self.entry(form, 5, 0, "契約工期", "contract_days", 10)
+        ttk.Label(form, text="工期類型").grid(row=5, column=2, sticky="e", padx=3, pady=2)
         self.day_type_var = tk.StringVar(value="工作日")
         self.day_type_var.trace_add("write", self.mark_dirty)
         self.day_type = ttk.Combobox(form, textvariable=self.day_type_var, state="readonly", values=["工作日", "日曆天"], width=10)
-        self.day_type.grid(row=4, column=3, sticky="ew", padx=3, pady=2)
+        self.day_type.grid(row=5, column=3, sticky="ew", padx=3, pady=2)
         self.edit_widgets.append(self.day_type)
 
-        self.entry(form, 5, 0, "預訂竣工日（例假表）", "planned_finish_holiday", 14, date_picker=True)
-        self.entry(form, 5, 2, "預訂竣工日（疏運表）", "planned_finish_transport", 14, date_picker=True)
-        self.entry(form, 5, 4, "實際竣工日", "actual_finish", 14, date_picker=True)
+        self.entry(form, 6, 0, "預訂竣工日（例假表）", "planned_finish_holiday", 14, date_picker=True)
+        self.entry(form, 6, 2, "預訂竣工日（疏運表）", "planned_finish_transport", 14, date_picker=True)
+        self.entry(form, 6, 4, "實際竣工日", "actual_finish", 14, date_picker=True)
 
-        self.entry(form, 6, 0, "預定初驗日", "planned_precheck_date", 14, date_picker=True)
-        self.entry(form, 6, 2, "實際初驗日", "actual_precheck_date", 14, date_picker=True)
-        self.entry(form, 6, 4, "預定驗收日", "planned_acceptance_date", 14, date_picker=True)
-        self.entry(form, 6, 6, "實際驗收日", "actual_acceptance_date", 14, date_picker=True)
+        self.entry(form, 7, 0, "預定初驗日", "planned_precheck_date", 14, date_picker=True)
+        self.entry(form, 7, 2, "實際初驗日", "actual_precheck_date", 14, date_picker=True)
+        self.entry(form, 7, 4, "預定驗收日", "planned_acceptance_date", 14, date_picker=True)
+        self.entry(form, 7, 6, "實際驗收日", "actual_acceptance_date", 14, date_picker=True)
 
-        self.entry(form, 7, 0, "決算日", "settlement_date", 14, date_picker=True)
-        self.entry(form, 7, 2, "保固年限", "warranty_years", 8)
-        self.readonly_entry(form, 7, 4, "保固結束日", "warranty_end_date", 14)
-        ttk.Label(form, text="保固備註").grid(row=7, column=6, sticky="ne", padx=3, pady=2)
+        self.entry(form, 8, 0, "決算日", "settlement_date", 14, date_picker=True)
+        self.entry(form, 8, 2, "保固年限", "warranty_years", 8)
+        self.readonly_entry(form, 8, 4, "保固結束日", "warranty_end_date", 14)
+        ttk.Label(form, text="保固備註").grid(row=8, column=6, sticky="ne", padx=3, pady=2)
         warranty_note = tk.Text(form, height=4, width=14, wrap="word", font=("Microsoft JhengHei UI", 10))
         warranty_note.configure(borderwidth=1, relief="solid", highlightthickness=1, highlightbackground=OSX_BORDER, background=OSX_ENTRY_BG, foreground=OSX_TEXT, insertbackground=OSX_TEXT)
-        warranty_note.grid(row=7, column=7, sticky="ew", padx=3, pady=2)
+        warranty_note.grid(row=8, column=7, sticky="ew", padx=3, pady=2)
         warranty_note.bind("<KeyRelease>", lambda e: self.mark_dirty())
         warranty_note.bind("<FocusOut>", lambda e: self.mark_dirty())
         self.edit_widgets.append(warranty_note)
         self.warranty_note_text = warranty_note
 
-        self.entry(form, 8, 0, "承攬商", "contractor", 14)
-        self.entry(form, 8, 2, "公司地址", "company_address", 14)
-        self.entry(form, 8, 4, "負責人", "responsible_person", 14)
-        self.entry(form, 8, 6, "聯絡人", "contact_person", 14)
-        self.entry(form, 9, 0, "電話", "phone", 14)
-        self.entry(form, 9, 2, "傳真電話", "fax", 14)
-        self.entry(form, 9, 4, "統一編號", "tax_id", 14)
+        self.entry(form, 9, 0, "承攬商", "contractor", 14)
+        self.entry(form, 9, 2, "公司地址", "company_address", 14)
+        self.entry(form, 9, 4, "負責人", "responsible_person", 14)
+        self.entry(form, 9, 6, "聯絡人", "contact_person", 14)
+        self.entry(form, 10, 0, "電話", "phone", 14)
+        self.entry(form, 10, 2, "傳真電話", "fax", 14)
+        self.entry(form, 10, 4, "統一編號", "tax_id", 14)
 
-        ttk.Label(form, text="工程執行狀態").grid(row=10, column=0, sticky="e", padx=3, pady=2)
+        ttk.Label(form, text="工程執行狀態").grid(row=11, column=0, sticky="e", padx=3, pady=2)
         self.execution_status_var = tk.StringVar(value="規劃中")
         self.execution_status_var.trace_add("write", self.mark_dirty)
         self.execution_status_combo = ttk.Combobox(
@@ -2466,20 +2559,20 @@ class App(tk.Tk):
             values=["規劃中", "招標中", "決標完成", "開工中", "施工中", "停工中", "復工中", "竣工中", "已竣工", "驗收中", "驗收完成", "結案"],
             width=14
         )
-        self.execution_status_combo.grid(row=10, column=1, sticky="ew", padx=3, pady=2)
+        self.execution_status_combo.grid(row=11, column=1, sticky="ew", padx=3, pady=2)
         self.edit_widgets.append(self.execution_status_combo)
 
-        self.multiline_entry(form, 11, 0, "工程說明", "project_description", height=3)
+        self.multiline_entry(form, 12, 0, "工程說明", "project_description", height=3)
 
-        self.section_title(form, "保證金", 12)
-        self.entry(form, 13, 0, "差額保證金", "deposit_difference", 12)
-        self.performance_deposit_entry(form, 13, 2)
-        self.entry(form, 13, 4, "履保金比例", "performance_bond_rate", 8)
-        self.readonly_entry(form, 13, 6, "保證金總額", "deposit_total", 12)
-        self.readonly_entry(form, 14, 0, "保固保證金", "warranty_deposit", 12)
-        self.entry(form, 14, 2, "保固金比例", "warranty_rate", 8)
-        self.entry(form, 14, 4, "履保金型式", "performance_bond_type", 12)
-        self.entry(form, 14, 6, "保固金型式", "warranty_bond_type", 12)
+        self.section_title(form, "保證金", 13)
+        self.entry(form, 14, 0, "差額保證金", "deposit_difference", 12)
+        self.performance_deposit_entry(form, 14, 2)
+        self.entry(form, 14, 4, "履保金比例", "performance_bond_rate", 8)
+        self.readonly_entry(form, 14, 6, "保證金總額", "deposit_total", 12)
+        self.readonly_entry(form, 15, 0, "保固保證金", "warranty_deposit", 12)
+        self.entry(form, 15, 2, "保固金比例", "warranty_rate", 8)
+        self.entry(form, 15, 4, "履保金型式", "performance_bond_type", 12)
+        self.entry(form, 15, 6, "保固金型式", "warranty_bond_type", 12)
 
         self.build_money_sections(form)
 
@@ -3040,10 +3133,19 @@ class App(tk.Tk):
             ["exclude", "day", "note"],
             ["排除", "日期", "疏運名稱"],
             [36, 138, 135],
-            self.mark_dirty,
+            self.on_railway_changed,
             add_command=self.open_railway_calendar_dialog
         )
         self.railway_tree.pack(fill="both", expand=True, pady=6)
+
+    def on_railway_changed(self):
+        self.mark_dirty()
+        if not self.loading and not self.restoring:
+            try:
+                self.after_idle(self.render_calendar)
+                self.status_var.set("疏運表已更新，施工日曆已同步重算")
+            except tk.TclError:
+                pass
 
     def import_holidays_to_railway(self):
         if not self.can_edit():
@@ -3193,6 +3295,199 @@ class App(tk.Tk):
         cal_area.grid_columnconfigure(0, weight=1)
         self.cal_canvas.bind("<Configure>", lambda e: self.render_calendar())
         self.cal_canvas.bind("<MouseWheel>", lambda e: self.shift_month(-1 if e.delta > 0 else 1))
+
+    def build_progress_estimate_tab(self):
+        self.add_page_edit_toggle(self.tab_progress_estimate)
+        ttk.Label(
+            self.tab_progress_estimate,
+            text="工程進度估算：月份請用 YYY/MM 格式；預估/實際施作金額會依第一分頁的發包契約金額與進度百分比自動計算。"
+        ).pack(anchor="w", pady=(0, 6))
+        self.progress_estimate_tree = EditableTree(
+            self.tab_progress_estimate,
+            PROGRESS_ESTIMATE_FIELDS,
+            PROGRESS_ESTIMATE_HEADINGS,
+            PROGRESS_ESTIMATE_WIDTHS,
+            self.on_progress_estimate_changed,
+            add_command=self.open_progress_estimate_add_dialog,
+            edit_command=self.open_progress_estimate_edit_dialog,
+            height=14,
+        )
+        self.configure_tree_alignment(
+            self.progress_estimate_tree.tree,
+            PROGRESS_ESTIMATE_FIELDS,
+            PROGRESS_ESTIMATE_MONEY_FIELDS,
+        )
+        self.progress_estimate_tree.pack(fill="both", expand=True, pady=6)
+
+    def default_roc_month_text(self):
+        today = date.today()
+        return f"{today.year - 1911:03d}/{today.month:02d}"
+
+    def normalize_progress_month(self, text):
+        text = str(text or "").strip().replace("-", "/")
+        if not text:
+            return ""
+        m = re.match(r"^(\d{2,4})\s*/\s*(\d{1,2})$", text)
+        if not m:
+            return text
+        year = int(m.group(1))
+        month = max(1, min(12, int(m.group(2))))
+        if year >= 1912:
+            year -= 1911
+        return f"{year:03d}/{month:02d}"
+
+    def normalize_percent_value(self, value):
+        raw = str(value or "").strip().replace("%", "").replace(",", "")
+        if not raw:
+            return ""
+        try:
+            dec = Decimal(raw).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError):
+            return str(value or "").strip()
+        if dec == dec.to_integral_value():
+            return f"{int(dec)}%"
+        return f"{dec:.2f}%"
+
+    def percent_decimal_fraction(self, value):
+        raw = str(value or "").strip().replace("%", "").replace(",", "")
+        if not raw:
+            return Decimal("0")
+        try:
+            return Decimal(raw) / Decimal("100")
+        except (InvalidOperation, ValueError):
+            return Decimal("0")
+
+    def progress_contract_base_amount(self):
+        if hasattr(self, "basic_vars") and "award_contract_amount" in self.basic_vars:
+            return self.money_decimal(self.basic_vars["award_contract_amount"].get())
+        return Decimal("0")
+
+    def on_progress_estimate_changed(self):
+        self.refresh_progress_estimate_amounts(mark_dirty=False)
+        self.mark_dirty()
+
+    def open_progress_estimate_add_dialog(self):
+        self.open_progress_estimate_dialog(item=None)
+
+    def open_progress_estimate_edit_dialog(self):
+        if not hasattr(self, "progress_estimate_tree"):
+            return
+        item = self.progress_estimate_tree.tree.focus()
+        if not item:
+            return
+        self.open_progress_estimate_dialog(item=item)
+
+    def open_progress_estimate_dialog(self, item=None):
+        if not self.can_edit():
+            messagebox.showwarning("編輯鎖定", "此工程已設定密碼，請先在上半部輸入正確編輯密碼解鎖。")
+            return
+        tree = self.progress_estimate_tree
+        is_edit = item is not None
+        old_values = list(tree.tree.item(item, "values")) if is_edit else [""] * len(PROGRESS_ESTIMATE_FIELDS)
+        old_values = (old_values + [""] * len(PROGRESS_ESTIMATE_FIELDS))[:len(PROGRESS_ESTIMATE_FIELDS)]
+        idx_map = {field: i for i, field in enumerate(PROGRESS_ESTIMATE_FIELDS)}
+        if not is_edit:
+            if not old_values[idx_map["item_no"]]:
+                old_values[idx_map["item_no"]] = str(len(tree.get_rows()) + 1)
+            if not old_values[idx_map["month"]]:
+                old_values[idx_map["month"]] = self.default_roc_month_text()
+
+        win = tk.Toplevel(self)
+        win.title("編輯工程進度估算" if is_edit else "新增工程進度估算")
+        win.transient(self)
+        win.grab_set()
+        win.geometry("620x320")
+        win.minsize(560, 280)
+        form = ttk.Frame(win, padding=12)
+        form.pack(fill="both", expand=True)
+        vars_map = {}
+        entries = {}
+        for i, (field, heading) in enumerate(zip(PROGRESS_ESTIMATE_FIELDS, PROGRESS_ESTIMATE_HEADINGS)):
+            row = i
+            ttk.Label(form, text=heading + "：").grid(row=row, column=0, sticky="e", padx=6, pady=5)
+            var = tk.StringVar(value=old_values[i] if i < len(old_values) else "")
+            vars_map[field] = var
+            ent = ttk.Entry(form, textvariable=var, width=28)
+            ent.grid(row=row, column=1, sticky="ew", padx=6, pady=5)
+            entries[field] = ent
+            if field in PROGRESS_ESTIMATE_READONLY_FIELDS:
+                ent.configure(state="readonly")
+        form.grid_columnconfigure(1, weight=1)
+
+        def update_amounts(*_):
+            base = self.progress_contract_base_amount()
+            for progress_field, amount_field in (("estimated_progress", "estimated_amount"), ("actual_progress", "actual_amount")):
+                amount = base * self.percent_decimal_fraction(vars_map[progress_field].get())
+                text = self.format_money_value(amount) if amount else ""
+                vars_map[amount_field].set(text)
+
+        for field in ("estimated_progress", "actual_progress"):
+            entries[field].bind("<KeyRelease>", update_amounts)
+            entries[field].bind("<FocusOut>", lambda e, f=field: (vars_map[f].set(self.normalize_percent_value(vars_map[f].get())), update_amounts()))
+            entries[field].bind("<Return>", lambda e, f=field: (vars_map[f].set(self.normalize_percent_value(vars_map[f].get())), update_amounts()))
+        entries["month"].bind("<FocusOut>", lambda e: vars_map["month"].set(self.normalize_progress_month(vars_map["month"].get())))
+        entries["month"].bind("<Return>", lambda e: vars_map["month"].set(self.normalize_progress_month(vars_map["month"].get())))
+        update_amounts()
+
+        def ok():
+            vars_map["month"].set(self.normalize_progress_month(vars_map["month"].get()))
+            vars_map["estimated_progress"].set(self.normalize_percent_value(vars_map["estimated_progress"].get()))
+            vars_map["actual_progress"].set(self.normalize_percent_value(vars_map["actual_progress"].get()))
+            update_amounts()
+            values = [vars_map[field].get().strip() for field in PROGRESS_ESTIMATE_FIELDS]
+            win.destroy()
+            if is_edit:
+                tree.tree.item(item, values=values)
+                tree.tree.selection_set(item)
+                tree.tree.focus(item)
+            else:
+                tree.add_row(values)
+            self.refresh_progress_estimate_amounts(mark_dirty=True)
+
+        btns = ttk.Frame(win, padding=(12, 0, 12, 12))
+        btns.pack(fill="x")
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(btns, text="確定", command=ok).pack(side="right", padx=4)
+        entries["item_no"].focus_set()
+
+    def refresh_progress_estimate_amounts(self, mark_dirty=False):
+        if not hasattr(self, "progress_estimate_tree"):
+            return
+        restore_focus = self._remember_and_restore_tree_focus(self.progress_estimate_tree, PROGRESS_ESTIMATE_FIELDS, "item_no")
+        rows = self.progress_estimate_tree.get_rows()
+        if not rows:
+            return
+        indexes = {field: idx for idx, field in enumerate(PROGRESS_ESTIMATE_FIELDS)}
+        base = self.progress_contract_base_amount()
+        calculated_rows = []
+        for raw_row in rows:
+            row = (list(raw_row) + [""] * len(PROGRESS_ESTIMATE_FIELDS))[:len(PROGRESS_ESTIMATE_FIELDS)]
+            row[indexes["month"]] = self.normalize_progress_month(row[indexes["month"]])
+            for progress_field, amount_field in (("estimated_progress", "estimated_amount"), ("actual_progress", "actual_amount")):
+                p_text = self.normalize_percent_value(row[indexes[progress_field]])
+                row[indexes[progress_field]] = p_text
+                amount = base * self.percent_decimal_fraction(p_text)
+                row[indexes[amount_field]] = self.format_money_value(amount) if amount else ""
+            calculated_rows.append(row)
+        self.progress_estimate_tree.set_rows(calculated_rows)
+        self.configure_tree_alignment(self.progress_estimate_tree.tree, PROGRESS_ESTIMATE_FIELDS, PROGRESS_ESTIMATE_MONEY_FIELDS)
+        restore_focus()
+        if mark_dirty:
+            self.mark_dirty()
+
+    def progress_estimate_db_rows_to_tree(self, db_rows):
+        rows = []
+        for r in db_rows:
+            rows.append([r[field] if field in r.keys() and r[field] is not None else "" for field in PROGRESS_ESTIMATE_FIELDS])
+        return rows
+
+    def progress_estimate_tree_rows_to_db(self):
+        self.refresh_progress_estimate_amounts(mark_dirty=False)
+        rows = []
+        for r in self.progress_estimate_tree.get_rows():
+            vals = (list(r) + [""] * len(PROGRESS_ESTIMATE_FIELDS))[:len(PROGRESS_ESTIMATE_FIELDS)]
+            rows.append({field: vals[idx] for idx, field in enumerate(PROGRESS_ESTIMATE_FIELDS)})
+        return rows
 
     def build_payment_tabs(self):
         self.add_page_edit_toggle(self.tab_payment_contract)
@@ -4077,12 +4372,12 @@ class App(tk.Tk):
 
     def build_execution_tab(self):
         self.add_page_edit_toggle(self.tab_execution)
-        ttk.Label(self.tab_execution, text="工程執行紀錄表：按「新增一列」用行事曆新增；可點選標題列排序。").pack(anchor="w")
+        ttk.Label(self.tab_execution, text="會議記錄表：按「新增一列」用行事曆新增；時間與標題會同步加入工程大事記。").pack(anchor="w")
         self.execution_tree = EditableTree(
             self.tab_execution,
-            ["day", "record_type", "content", "note"],
-            ["日期", "資料類型", "內容", "備註"],
-            [120, 160, 520, 260],
+            ["day", "record_type", "subject", "content", "note"],
+            ["時間", "類型", "標題", "內容", "備註"],
+            [120, 140, 220, 420, 220],
             self.mark_dirty,
             add_command=self.open_execution_calendar_dialog
         )
@@ -4095,7 +4390,7 @@ class App(tk.Tk):
 
         base_date = parse_date(self.basic_vars.get("planned_start", tk.StringVar()).get()) or date.today()
         win = tk.Toplevel(self)
-        win.title("新增工程執行紀錄")
+        win.title("新增會議記錄")
         win.transient(self)
         win.grab_set()
         win.resizable(False, False)
@@ -4104,6 +4399,7 @@ class App(tk.Tk):
         month_var = tk.IntVar(value=base_date.month)
         selected_day_var = tk.StringVar(value="")
         type_var = tk.StringVar(value="工作會議")
+        subject_var = tk.StringVar(value="")
         note_var = tk.StringVar(value="")
 
         top = ttk.Frame(win, padding=10)
@@ -4138,7 +4434,7 @@ class App(tk.Tk):
 
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
-        ttk.Label(form, text="資料類型").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Label(form, text="類型").grid(row=0, column=0, sticky="e", padx=(0, 6), pady=4)
         ttk.Combobox(
             form,
             textvariable=type_var,
@@ -4146,16 +4442,19 @@ class App(tk.Tk):
             state="readonly",
             width=20
         ).grid(row=0, column=1, sticky="ew", pady=4)
-        ttk.Label(form, text="內容").grid(row=1, column=0, sticky="ne", padx=(0, 6), pady=4)
+        ttk.Label(form, text="標題").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Entry(form, textvariable=subject_var, width=48).grid(row=1, column=1, sticky="ew", pady=4)
+        ttk.Label(form, text="內容").grid(row=2, column=0, sticky="ne", padx=(0, 6), pady=4)
         content_text = tk.Text(form, height=5, width=48, wrap="word", font=("Microsoft JhengHei UI", 10), background=OSX_ENTRY_BG, foreground=OSX_TEXT, insertbackground=OSX_TEXT, relief="solid", bd=1)
-        content_text.grid(row=1, column=1, sticky="ew", pady=4)
-        ttk.Label(form, text="備註").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
+        content_text.grid(row=2, column=1, sticky="ew", pady=4)
+        ttk.Label(form, text="備註").grid(row=3, column=0, sticky="e", padx=(0, 6), pady=4)
         note_entry = ttk.Entry(form, textvariable=note_var, width=48)
-        note_entry.grid(row=2, column=1, sticky="ew", pady=4)
+        note_entry.grid(row=3, column=1, sticky="ew", pady=4)
         form.grid_columnconfigure(1, weight=1)
 
         def select_day(day):
             selected_day_var.set(day.strftime("%Y-%m-%d"))
+            subject_var.set(subject_var.get().strip())
             content_text.focus_set()
 
         def render_calendar():
@@ -4184,13 +4483,17 @@ class App(tk.Tk):
                 messagebox.showwarning("尚未選日期", "請先在日曆表點選日期。", parent=win)
                 return
             content = content_text.get("1.0", "end-1c").strip()
-            if not content:
-                messagebox.showwarning("尚未輸入內容", "請輸入內容。", parent=win)
+            subject = subject_var.get().strip()
+            if not subject:
+                messagebox.showwarning("尚未輸入標題", "請輸入標題。", parent=win)
                 return
-            self.execution_tree.add_row_after_selection([day_text, type_var.get(), content, note_var.get().strip()])
+            self.execution_tree.add_row_after_selection([day_text, type_var.get(), subject, content, note_var.get().strip()])
+            self.add_meeting_to_milestones(day_text, subject, type_var.get(), content)
             selected_day_var.set("")
+            subject_var.set("")
             content_text.delete("1.0", "end")
             note_var.set("")
+            self.refresh_milestone_rows()
             content_text.focus_set()
 
         btns = ttk.Frame(win, padding=(10, 0, 10, 10))
@@ -4230,12 +4533,43 @@ class App(tk.Tk):
         vals[6] = "逾期" if received and deadline and received > deadline else ""
         return vals
 
+    def normalize_milestone_rows(self, rows):
+        normalized = [self.calc_milestone_row(list(r)) for r in rows]
+
+        def sort_key(row):
+            start = parse_date(row[2] if len(row) > 2 else "")
+            deadline = parse_date(row[4] if len(row) > 4 else "")
+            try:
+                original_no = int(float(row[0] or 0))
+            except ValueError:
+                original_no = 0
+            return (
+                start or date.max,
+                deadline or date.max,
+                original_no,
+                row[1] if len(row) > 1 else "",
+            )
+
+        normalized.sort(key=sort_key)
+        for index, row in enumerate(normalized, start=1):
+            row[0] = str(index)
+        return normalized
+
     def refresh_milestone_rows(self):
         if not hasattr(self, "milestone_tree"):
             return
-        rows = [self.calc_milestone_row(r) for r in self.milestone_tree.get_rows()]
+        rows = self.normalize_milestone_rows(self.milestone_tree.get_rows())
         self.milestone_tree.set_rows(rows)
         self.milestone_tree.apply_row_tags(lambda r: "pink" if len(r) > 5 and not r[5] else "")
+
+    def add_meeting_to_milestones(self, day_text, subject, record_type="", content=""):
+        if not hasattr(self, "milestone_tree"):
+            return
+        note_parts = [record_type.strip(), content.strip()]
+        note = " / ".join(part for part in note_parts if part)
+        self.milestone_tree.add_row([
+            "", subject.strip(), day_text.strip(), "", "", "", "", "", note, ""
+        ])
 
     def pick_date_for_var(self, target_var, parent):
         base = parse_date(target_var.get()) or date.today()
@@ -4289,6 +4623,7 @@ class App(tk.Tk):
         win.transient(self)
         win.grab_set()
         vars_ = {k: tk.StringVar() for k in ["item_no", "contract_item", "start_date", "deadline_days", "received_date", "received_no", "note", "day_adjust"]}
+        vars_["item_no"].set(str(len(self.milestone_tree.get_rows()) + 1))
         labels = [("項次", "item_no"), ("履約項目", "contract_item"), ("起算日期", "start_date"), ("履約期限日數", "deadline_days"), ("收文日期", "received_date"), ("收文文號", "received_no"), ("註記", "note"), ("日數調整", "day_adjust")]
         form = ttk.Frame(win, padding=10)
         form.pack(fill="x")
@@ -4669,7 +5004,7 @@ class App(tk.Tk):
     def assign_tree_edit_guards(self):
         for name in [
             "bid_tree", "holiday_tree", "workday_tree", "weather_tree", "railway_tree",
-            "payment_contract_tree", "payment_other_tree", "payment_admin_tree",
+            "payment_contract_tree", "payment_other_tree", "payment_admin_tree", "progress_estimate_tree",
             "execution_tree", "milestone_tree", "change_demand_tree", "change_confirm_tree",
             "change_budget_tree"
         ]:
@@ -4873,7 +5208,7 @@ class App(tk.Tk):
             self.project_password_hash = ""
             self.edit_unlocked = True
             self.dirty = False
-            self.undo_snapshot = None
+            self.undo_history = []
             self.last_state = None
             self.update_database_path_display()
             self.load_projects()
@@ -5011,8 +5346,11 @@ class App(tk.Tk):
         self.payment_admin_tree.set_rows(self.payment_admin_db_rows_to_tree(self.db.rows("payment_admin", pid)))
         self.load_admin_setup_from_project(p)
         self.refresh_payment_admin_cumulatives(mark_dirty=False)
+        if hasattr(self, "progress_estimate_tree"):
+            self.progress_estimate_tree.set_rows(self.progress_estimate_db_rows_to_tree(self.db.rows("progress_estimates", pid)))
+            self.refresh_progress_estimate_amounts(mark_dirty=False)
         self.execution_tree.set_rows([
-            [r["day"], r["record_type"], "\n".join(x for x in [r["subject"], r["content"]] if x), r["note"]]
+            [r["day"], r["record_type"], r["subject"] if "subject" in r.keys() else "", r["content"], r["note"]]
             for r in self.db.rows("execution_records", pid)
         ])
         self.milestone_tree.set_rows([
@@ -5043,7 +5381,7 @@ class App(tk.Tk):
         self.recalculate()
         self.render_calendar()
         self.apply_edit_lock_state()
-        self.undo_snapshot = None
+        self.undo_history = []
         self.last_state = self.capture_state()
         self.status_var.set(f"已載入：{p['name']}")
 
@@ -5074,6 +5412,18 @@ class App(tk.Tk):
                 days.add(d)
         return days
 
+    def collect_railway_text_map(self):
+        railway_map = {}
+        for row in self.railway_tree.get_rows():
+            if row and row[0] == "✓":
+                continue
+            d = parse_date(row[1] if len(row) > 1 else "")
+            if not d:
+                continue
+            note = str(row[2] if len(row) > 2 else "").strip() or "疏運"
+            railway_map[d] = note
+        return railway_map
+
     def collect_workday_dates(self):
         days = set()
         for row in self.workday_tree.get_rows():
@@ -5089,10 +5439,12 @@ class App(tk.Tk):
         for row in self.weather_tree.get_rows():
             d = parse_date(row[0] if row else "")
             if d:
-                rows[d] = (
-                    self.safe_amount(row[1] if len(row) > 1 else 0),
-                    self.safe_amount(row[2] if len(row) > 2 else 0),
-                )
+                note_text = str(row[5] if len(row) > 5 else "").strip()
+                rows[d] = {
+                    "morning": self.safe_amount(row[1] if len(row) > 1 else 0),
+                    "afternoon": self.safe_amount(row[2] if len(row) > 2 else 0),
+                    "force_no_work": note_text == "-1",
+                }
         return rows
 
     def daily_work_increment(self, d, holiday_dates=None, railway_dates=None, workday_dates=None, weather_rows=None):
@@ -5107,13 +5459,20 @@ class App(tk.Tk):
 
         if d in railway_dates:
             return 0
+        weather_info = weather_rows.get(d) if isinstance(weather_rows, dict) else None
+        if isinstance(weather_info, dict) and weather_info.get("force_no_work"):
+            return 0
         base = 1 if self.day_type_var.get() == "日曆天" else (1 if d.weekday() < 5 else 0)
         if d in workday_dates:
             base = 1
         if d in holiday_dates:
             return 0
-        if d in weather_rows:
-            morning, afternoon = weather_rows[d]
+        if weather_info:
+            if isinstance(weather_info, dict):
+                morning = self.safe_amount(weather_info.get("morning", 0))
+                afternoon = self.safe_amount(weather_info.get("afternoon", 0))
+            else:
+                morning, afternoon = weather_info
             if morning >= 1.0:
                 rain_deduct = 1.0
             else:
@@ -5285,6 +5644,7 @@ class App(tk.Tk):
             self.update_deposit_performance_manual_state()
             self.refresh_admin_management_fee_source()
             self.refresh_admin_setup_totals()
+            self.refresh_progress_estimate_amounts(mark_dirty=False)
 
             ratio_values = {
                 "award_contract_budget_ratio": self.percent_text(award_total, budget_total),
@@ -5370,15 +5730,17 @@ class App(tk.Tk):
         self.db.replace_rows("payment_contract", self.current_project_id, self.payment_contract_tree_rows_to_db())
         self.db.replace_rows("payment_other", self.current_project_id, self.payment_other_tree_rows_to_db())
         self.db.replace_rows("payment_admin", self.current_project_id, self.payment_admin_tree_rows_to_db())
+        if hasattr(self, "progress_estimate_tree"):
+            self.db.replace_rows("progress_estimates", self.current_project_id, self.progress_estimate_tree_rows_to_db())
 
         execution_rows = []
         for r in self.execution_tree.get_rows():
             execution_rows.append({
                 "day": r[0] if len(r) > 0 else "",
                 "record_type": r[1] if len(r) > 1 else "",
-                "subject": "",
-                "content": r[2] if len(r) > 2 else "",
-                "note": r[3] if len(r) > 3 else "",
+                "subject": r[2] if len(r) > 2 else "",
+                "content": r[3] if len(r) > 3 else "",
+                "note": r[4] if len(r) > 4 else "",
             })
         self.db.replace_rows("execution_records", self.current_project_id, execution_rows)
         self.refresh_milestone_rows()
@@ -5487,10 +5849,11 @@ class App(tk.Tk):
             "補班日表": self.workday_tree,
             "晴雨表": self.weather_tree,
             "鐵路疏運表": self.railway_tree,
+            "工程進度估算": self.progress_estimate_tree,
             "發包工程費計價": self.payment_contract_tree,
             "發包以外計價": self.payment_other_tree,
             "管理費計價": self.payment_admin_tree,
-            "工程執行紀錄表": self.execution_tree,
+            "會議記錄表": self.execution_tree,
             "工程大事記": self.milestone_tree,
         }
 
@@ -5597,6 +5960,147 @@ class App(tk.Tk):
         ttk.Button(btns, text="匯出", command=do_export).pack(side="right", padx=4)
         ttk.Button(btns, text="取消", command=win.destroy).pack(side="right", padx=4)
 
+    def open_print_dialog(self):
+        self.save_current()
+        pages = self.exportable_pages()
+        win = tk.Toplevel(self)
+        win.title("列印設定")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, True)
+
+        box = ttk.Frame(win, padding=12)
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="請勾選要列印的分頁").grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+        vars_by_page = {}
+        for i, page_name in enumerate(pages):
+            var = tk.BooleanVar(value=page_name in ("工程基本資料", "會議記錄表", "工程大事記"))
+            vars_by_page[page_name] = var
+            ttk.Checkbutton(box, text=page_name, variable=var).grid(row=1 + i // 2, column=(i % 2) * 2, columnspan=2, sticky="w", pady=2)
+
+        option_row = 1 + (len(pages) + 1) // 2
+        ttk.Separator(box).grid(row=option_row, column=0, columnspan=4, sticky="ew", pady=8)
+        paper_var = tk.StringVar(value="A4")
+        orientation_var = tk.StringVar(value="直式")
+        duplex_var = tk.StringVar(value="單面")
+        margin_var = tk.StringVar(value="12")
+        font_size_var = tk.StringVar(value="10")
+        include_project_var = tk.BooleanVar(value=True)
+        include_time_var = tk.BooleanVar(value=True)
+
+        ttk.Label(box, text="紙張").grid(row=option_row + 1, column=0, sticky="e", padx=4, pady=3)
+        ttk.Combobox(box, textvariable=paper_var, values=["A4", "A3", "Letter"], state="readonly", width=10).grid(row=option_row + 1, column=1, sticky="w", pady=3)
+        ttk.Label(box, text="方向").grid(row=option_row + 1, column=2, sticky="e", padx=4, pady=3)
+        ttk.Combobox(box, textvariable=orientation_var, values=["直式", "橫式"], state="readonly", width=10).grid(row=option_row + 1, column=3, sticky="w", pady=3)
+        ttk.Label(box, text="正反面").grid(row=option_row + 2, column=0, sticky="e", padx=4, pady=3)
+        ttk.Combobox(box, textvariable=duplex_var, values=["單面", "雙面長邊", "雙面短邊"], state="readonly", width=10).grid(row=option_row + 2, column=1, sticky="w", pady=3)
+        ttk.Label(box, text="邊界(mm)").grid(row=option_row + 2, column=2, sticky="e", padx=4, pady=3)
+        ttk.Spinbox(box, from_=5, to=30, textvariable=margin_var, width=8).grid(row=option_row + 2, column=3, sticky="w", pady=3)
+        ttk.Label(box, text="字級(pt)").grid(row=option_row + 3, column=0, sticky="e", padx=4, pady=3)
+        ttk.Spinbox(box, from_=8, to=16, textvariable=font_size_var, width=8).grid(row=option_row + 3, column=1, sticky="w", pady=3)
+        ttk.Checkbutton(box, text="列印工程名稱", variable=include_project_var).grid(row=option_row + 3, column=2, sticky="w", pady=3)
+        ttk.Checkbutton(box, text="列印產生時間", variable=include_time_var).grid(row=option_row + 3, column=3, sticky="w", pady=3)
+
+        def do_print_export():
+            selected = [name for name, var in vars_by_page.items() if var.get()]
+            if not selected:
+                messagebox.showwarning("尚未選擇", "請至少勾選一個分頁。", parent=win)
+                return
+            folder = filedialog.askdirectory(title="選擇列印檔儲存資料夾", parent=win)
+            if not folder:
+                return
+            try:
+                path = self.write_print_html(
+                    folder,
+                    selected,
+                    paper_var.get(),
+                    orientation_var.get(),
+                    duplex_var.get(),
+                    margin_var.get(),
+                    font_size_var.get(),
+                    include_project_var.get(),
+                    include_time_var.get(),
+                )
+                messagebox.showinfo("列印檔已產生", f"已產生列印檔：\n{path}\n\n請用瀏覽器開啟後列印。", parent=win)
+                win.destroy()
+            except Exception as exc:
+                messagebox.showerror("列印檔產生失敗", str(exc), parent=win)
+
+        btns = ttk.Frame(box)
+        btns.grid(row=option_row + 4, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        ttk.Button(btns, text="產生列印檔", command=do_print_export).pack(side="right", padx=4)
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="right", padx=4)
+
+    def write_print_html(self, folder, page_names, paper, orientation, duplex, margin_mm, font_size, include_project, include_time):
+        timestamp = datetime.now().strftime("%Y%m%d%H%M")
+        project_name = self.basic_vars.get("name", tk.StringVar()).get().strip() if hasattr(self, "basic_vars") else ""
+        safe_project = "".join(ch if ch not in r'\/:*?"<>|' else "_" for ch in (project_name or "TRFxWork"))
+        path = os.path.join(folder, f"{safe_project}_print_{timestamp}.html")
+        paper_css = html.escape(paper or "A4")
+        orientation_css = "landscape" if orientation == "橫式" else "portrait"
+        try:
+            margin = max(5, min(30, int(float(str(margin_mm).strip() or 12))))
+        except ValueError:
+            margin = 12
+        try:
+            size = max(8, min(16, int(float(str(font_size).strip() or 10))))
+        except ValueError:
+            size = 10
+        sections = []
+        for page_name in page_names:
+            rows = self.basic_page_export_rows() if page_name == "工程基本資料" else self.table_page_export_rows(page_name)
+            body_rows = []
+            for row in rows:
+                if not row:
+                    body_rows.append("<tr class=\"blank\"><td colspan=\"20\"></td></tr>")
+                    continue
+                cells = "".join(f"<td>{html.escape(str(cell))}</td>" for cell in row)
+                body_rows.append(f"<tr>{cells}</tr>")
+            sections.append(
+                "<section class=\"page-section\">"
+                f"<h2>{html.escape(page_name)}</h2>"
+                "<table>"
+                + "\n".join(body_rows)
+                + "</table></section>"
+            )
+        meta = []
+        if include_project:
+            meta.append(f"工程名稱：{html.escape(project_name)}")
+        if include_time:
+            meta.append("產生時間：" + datetime.now().strftime("%Y-%m-%d %H:%M"))
+        meta.append("列印方式：" + html.escape(duplex or "單面"))
+        meta.append("紙張：" + html.escape(paper or "A4") + " " + html.escape(orientation or "直式"))
+        content = f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>{html.escape(project_name or "TRFxWork")} 列印檔</title>
+<style>
+@page {{ size: {paper_css} {orientation_css}; margin: {margin}mm; }}
+body {{ font-family: "Microsoft JhengHei UI", "PingFang TC", sans-serif; font-size: {size}pt; color: #000; }}
+h1 {{ text-align: center; font-size: {size + 6}pt; margin: 0 0 8mm; }}
+h2 {{ font-size: {size + 3}pt; margin: 0 0 4mm; }}
+.meta {{ border: 1px solid #000; padding: 6px 8px; margin-bottom: 8mm; line-height: 1.6; }}
+.page-section {{ page-break-after: always; }}
+.page-section:last-child {{ page-break-after: auto; }}
+table {{ border-collapse: collapse; width: 100%; table-layout: auto; }}
+td, th {{ border: 1px solid #000; padding: 4px 5px; vertical-align: top; white-space: pre-wrap; word-break: break-word; }}
+tr.blank td {{ height: 8mm; border: 0; }}
+@media print {{ .no-print {{ display: none; }} }}
+</style>
+</head>
+<body>
+<div class="no-print meta">瀏覽器列印時請依這裡的設定選擇印表機選項；正反面選項為「{html.escape(duplex or "單面")}」。</div>
+<h1>{html.escape(project_name or "臺鐵工程本本")}</h1>
+<div class="meta">{'<br>'.join(meta)}</div>
+{''.join(sections)}
+</body>
+</html>
+"""
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return path
+
     def import_basic_page_rows(self, rows):
         label_to_key = {
             "工程名稱": "name", "工程執行號": "exec_no", "動支請示單號": "budget_no",
@@ -5682,6 +6186,8 @@ class App(tk.Tk):
             if not rows or not rows[0]:
                 raise RuntimeError("Excel 第一行找不到分頁名稱")
             page_name = rows[0][0].strip()
+            if page_name == "工程執行紀錄表":
+                page_name = "會議記錄表"
             pages = self.exportable_pages()
             if page_name not in pages:
                 raise RuntimeError(f"無法辨識分頁名稱：{page_name}")
@@ -5693,10 +6199,19 @@ class App(tk.Tk):
                 messagebox.showinfo("匯入完成", f"已匯入到分頁：{page_name}")
                 return
             expected_cols = len(pages[page_name].columns)
-            normalized = [(r + [""] * expected_cols)[:expected_cols] for r in data_rows if any(str(v).strip() for v in r)]
+            normalized = []
+            for r in data_rows:
+                if not any(str(v).strip() for v in r):
+                    continue
+                if page_name == "會議記錄表" and len(r) == 4:
+                    normalized.append([r[0], r[1], "", r[2], r[3]])
+                else:
+                    normalized.append((r + [""] * expected_cols)[:expected_cols])
             pages[page_name].set_rows(normalized)
             if page_name == "工程大事記":
                 self.refresh_milestone_rows()
+            if page_name == "工程進度估算":
+                self.refresh_progress_estimate_amounts(mark_dirty=False)
             self.mark_dirty()
             self.save_current()
             messagebox.showinfo("匯入完成", f"已匯入到分頁：{page_name}")
@@ -5733,7 +6248,8 @@ class App(tk.Tk):
             "railway": ["day", "note"],
             "payment_contract": ["day", "item", "voucher_no", "amount", "note"] + PAYMENT_CONTRACT_FIELDS,
             "payment_other": ["day", "item", "voucher_no", "amount", "note"],
-            "payment_admin": ["day", "item", "voucher_no", "amount", "note"],
+            "payment_admin": ["day", "item", "voucher_no", "amount", "note"] + PAYMENT_ADMIN_FIELDS,
+            "progress_estimates": PROGRESS_ESTIMATE_FIELDS,
             "execution_records": ["day", "record_type", "subject", "content", "note"],
             "project_milestones": ["item_no", "contract_item", "start_date", "deadline_days", "deadline_date", "received_date", "overdue", "received_no", "note", "day_adjust"],
         }
@@ -5847,6 +6363,19 @@ class App(tk.Tk):
 
     def weather_text_map(self):
         out = {}
+
+        def normalize_weather_field(value):
+            # 施工日曆晴雨註記：空白、0、0.0、0.00 不顯示；有內容就直接顯示內容，不加前綴詞。
+            text = str(value or "").strip()
+            if not text:
+                return ""
+            try:
+                if Decimal(text.replace(",", "")) == 0:
+                    return ""
+            except (InvalidOperation, ValueError):
+                pass
+            return text
+
         for r in self.weather_tree.get_rows():
             d = parse_date(r[0])
             if not d:
@@ -5862,16 +6391,19 @@ class App(tk.Tk):
                     tags.append("下午雨")
             except ValueError:
                 pass
-            try:
-                if float(r[3] or 0) == 1:
-                    tags.append("颱風")
-            except ValueError:
-                pass
-            try:
-                if float(r[4] or 0) == 1:
-                    tags.append("場地")
-            except ValueError:
-                pass
+
+            weather_text = normalize_weather_field(r[3] if len(r) > 3 else "")
+            site_text = normalize_weather_field(r[4] if len(r) > 4 else "")
+            note_text = normalize_weather_field(r[5] if len(r) > 5 else "")
+            raw_note_text = str(r[5] if len(r) > 5 else "").strip()
+            if weather_text:
+                tags.append(weather_text)
+            if site_text:
+                tags.append(site_text)
+            if raw_note_text == "-1":
+                tags.append("不計工期")
+            elif note_text:
+                tags.append(f"備註:{note_text}")
             if tags:
                 out[d] = "、".join(tags)
         return out
@@ -5895,7 +6427,8 @@ class App(tk.Tk):
             if d:
                 holidays[d] = (r[2] if len(r) > 2 else "") or "假日"
 
-        railway = self.collect_railway_dates()
+        railway_text_map = self.collect_railway_text_map()
+        railway = set(railway_text_map.keys())
         workdays = self.collect_workday_dates()
 
         weather = self.weather_text_map()
@@ -5944,7 +6477,7 @@ class App(tk.Tk):
             c.create_rectangle(x0, top_h, x0 + cell_w, top_h + weekday_h, fill=colors["header"], outline=colors["grid"])
             c.create_text(x0 + cell_w/2, top_h + weekday_h/2, text=f"星期{wd}", font=("Microsoft JhengHei UI", main_font_size, "bold"))
 
-        row_labels = ["假日", "疏運日", "雨天", "工作日數"]
+        row_labels = ["假日", "疏運日", "晴雨註記", "工作日數"]
         work_count = 0
         holiday_ex = self.collect_exclude_dates(True)
         holiday_dates = self.collect_exclude_dates(False)
@@ -6016,7 +6549,7 @@ class App(tk.Tk):
                 c.create_text(x0+cell_w/2, y0+row_h*1.5, text=htxt, font=("Microsoft JhengHei UI", main_font_size))
 
                 # 第3行：疏運
-                rtxt = "疏運" if in_month and d in railway else ""
+                rtxt = railway_text_map.get(d, "") if in_month else ""
                 fill = colors["transport"] if rtxt else colors["white"]
                 c.create_rectangle(x0, y0+2*row_h, x0+cell_w, y0+3*row_h, fill=fill, outline=colors["grid"])
                 c.create_text(x0+cell_w/2, y0+row_h*2.5, text=rtxt, font=("Microsoft JhengHei UI", main_font_size))
